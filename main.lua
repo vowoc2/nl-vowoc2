@@ -1,10 +1,31 @@
 --=========================================================
--- NEVERLOSE UI — 1/12 (ФИКС: ScreenGui поверх всего + Watermark)
+-- NEVERLOSE UI — 1/13 (FIX v3)
+-- База: сервисы, цвета, конфиг, ScreenGui, Watermark,
+--       MainFrame, табы, ВСЕ UI-билдеры
+-- ФИКСЫ:
+--   • Перезапуск без "Уже запущено"
+--   • Удаление старых NL-инстансов
+--   • Guard для Cheat в Jump-петле
+--   • pcall везде где может упасть
+--   • Безопасный Watermark drag
+--   • ДОБАВЛЕНЫ БИЛДЕРЫ: createCheckbox / createSlider /
+--     createCycle / createButton (без них части 3+ крашились)
 --=========================================================
 
+--========== ПЕРЕЗАПУСК ==========
 if _G.NeverloseUILoaded then
-    return warn("[NL] Уже запущено")
+    warn("[NL] Обнаружен предыдущий запуск — выгружаю...")
+    pcall(function()
+        if _G.NL_UnloadComplete then _G.NL_UnloadComplete() end
+    end)
+    pcall(function()
+        if _G.NL_ScreenGui and _G.NL_ScreenGui.Parent then
+            _G.NL_ScreenGui:Destroy()
+        end
+    end)
+    task.wait(0.3)
 end
+
 _G.NeverloseUILoaded = true
 
 --========== SERVICES ==========
@@ -56,6 +77,33 @@ Cfg = {
     SaveFile      = "neverlose_config.json",
 }
 
+--========== CHEAT STATE ==========
+Cheat = {
+    Fly        = false, FlySpeed    = 50,
+    Speed      = false, SpeedValue  = 16,
+    Noclip     = false,
+    BunnyHop   = false,
+    SpinBot    = false, SpinSpeed   = 20,
+    Spider     = false, SpiderSpeed = 40,
+    InfJump    = false,
+    Jump       = false, JumpPower   = 50, JumpMode = "Power", JumpHeight = 7.2,
+
+    ESP        = false, ESPColor    = Color3.fromRGB(0, 140, 255),
+    FullBright = false,
+    BlackSky   = false,
+    Snow       = false,
+    WorldColor = Color3.fromRGB(0, 140, 255), WorldColorEnabled = false,
+    Fog        = false, FogColor    = Color3.fromRGB(200, 200, 200), FogDistance = 100,
+
+    AutoClicker = false, AutoClickCPS = 10, AutoClickButton = 0,
+    AutoClickRandom = false, AutoClickDelay = 0,
+    Hat = false,
+
+    AntiFling     = false,
+    AntiKnockback = false,
+    AntiRagdoll   = false,
+}
+
 --========== ACCENT SYSTEM ==========
 AccentElements = {}
 
@@ -99,7 +147,7 @@ BlurEffect.Parent = Lighting
 task.wait(1)
 
 --=========================================================
--- ✅ ИСПРАВЛЕНИЕ: ScreenGui поверх ВСЕГО (включая CoreGui)
+-- ScreenGui поверх ВСЕГО
 --=========================================================
 ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "NL"
@@ -108,13 +156,14 @@ ScreenGui.Enabled = true
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
 
--- Пытаемся посадить в gethui() → потом CoreGui → потом PlayerGui
+_G.NL_ScreenGui = ScreenGui
+
 local parented = false
 if type(gethui) == "function" then
     local ok, hui = pcall(gethui)
     if ok and hui then
-        ScreenGui.Parent = hui
-        parented = true
+        local ok2 = pcall(function() ScreenGui.Parent = hui end)
+        if ok2 then parented = true end
     end
 end
 
@@ -124,12 +173,10 @@ if not parented then
 end
 
 if not parented then
-    ScreenGui.Parent = PG
+    pcall(function() ScreenGui.Parent = PG end)
 end
 
 pcall(function() ScreenGui.DisplayOrder = 999999 end)
-
--- Скрываем топбар Roblox во время работы скрипта (чтобы ничего не торчало)
 pcall(function() StarterGui:SetCore("TopbarEnabled", false) end)
 
 --========== MENU SIZES ==========
@@ -145,7 +192,7 @@ function getMenuSize()
 end
 
 --=========================================================
--- ✅ ИСПРАВЛЕНИЕ WATERMARK: фиксированные размеры вместо AutomaticSize
+-- WATERMARK
 --=========================================================
 WM = Instance.new("Frame")
 WM.Name = "NL_Watermark"
@@ -263,7 +310,8 @@ local wmDrag = false
 local wmSM, wmSP
 
 WM.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
         wmDrag = true
         wmSM = Vector2.new(input.Position.X, input.Position.Y)
         local ap = WM.AbsolutePosition
@@ -274,24 +322,30 @@ WM.InputBegan:Connect(function(input)
 end)
 
 UIS.InputChanged:Connect(function(input)
-    if wmDrag and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local d = Vector2.new(input.Position.X, input.Position.Y) - wmSM
-        local nx, ny = wmSP.X + d.X, wmSP.Y + d.Y
-        local vp = Cam and Cam.ViewportSize or Vector2.new(1920, 1080)
-        local ws = WM.AbsoluteSize
-        nx = math.clamp(nx, 0, math.max(0, vp.X - ws.X))
-        ny = math.clamp(ny, 0, math.max(0, vp.Y - ws.Y))
-        WM.Position = UDim2.new(0, nx, 0, ny)
-    end
+    if not wmDrag then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    if not WM or not WM.Parent then wmDrag = false return end
+
+    local d = Vector2.new(input.Position.X, input.Position.Y) - wmSM
+    local nx, ny = wmSP.X + d.X, wmSP.Y + d.Y
+    local vp = (Cam and Cam.ViewportSize) or Vector2.new(1920, 1080)
+    local ws = WM.AbsoluteSize
+    nx = math.clamp(nx, 0, math.max(0, vp.X - ws.X))
+    ny = math.clamp(ny, 0, math.max(0, vp.Y - ws.Y))
+    WM.Position = UDim2.new(0, nx, 0, ny)
 end)
 
 UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
         wmDrag = false
     end
 end)
 
---========== MAIN FRAME ==========
+--=========================================================
+-- MAIN FRAME
+--=========================================================
 MainFrame = Instance.new("Frame")
 local initSize = getMenuSize()
 MainFrame.Size = UDim2.new(0, initSize.w, 0, initSize.h)
@@ -299,7 +353,6 @@ MainFrame.Position = UDim2.new(0.5, -initSize.w / 2, 0.5, -initSize.h / 2)
 MainFrame.BackgroundColor3 = NL_DARK
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
-MainFrame.Draggable = true
 MainFrame.Visible = false
 MainFrame.ZIndex = 50
 MainFrame.Parent = ScreenGui
@@ -326,6 +379,14 @@ TitleBar.Parent = MainFrame
 local TitleC = Instance.new("UICorner")
 TitleC.CornerRadius = UDim.new(0, 8)
 TitleC.Parent = TitleBar
+
+local TitleCover = Instance.new("Frame")
+TitleCover.Size = UDim2.new(1, 0, 0, 8)
+TitleCover.Position = UDim2.new(0, 0, 1, -8)
+TitleCover.BackgroundColor3 = NL_DARKER
+TitleCover.BorderSizePixel = 0
+TitleCover.ZIndex = 51
+TitleCover.Parent = TitleBar
 
 local TitleLogo = Instance.new("TextLabel")
 TitleLogo.Size = UDim2.new(0, 50, 1, 0)
@@ -379,6 +440,44 @@ CloseBtn.MouseEnter:Connect(function() tween(CloseBtn, 0.15, {TextColor3 = NL_RE
 CloseBtn.MouseLeave:Connect(function() tween(CloseBtn, 0.15, {TextColor3 = NL_DIM}) end)
 CloseBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false end)
 
+--========== CUSTOM DRAG ==========
+local mainDrag = false
+local mainSM, mainSP
+
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        if input.Position and CloseBtn.AbsolutePosition then
+            local r = Rect.new(CloseBtn.AbsolutePosition, CloseBtn.AbsoluteSize)
+            if r:Contains(input.Position) then return end
+        end
+        mainDrag = true
+        mainSM = Vector2.new(input.Position.X, input.Position.Y)
+        mainSP = Vector2.new(MainFrame.AbsolutePosition.X, MainFrame.AbsolutePosition.Y)
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if not mainDrag then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    if not MainFrame or not MainFrame.Parent then mainDrag = false return end
+
+    local d = Vector2.new(input.Position.X, input.Position.Y) - mainSM
+    local vp = (Cam and Cam.ViewportSize) or Vector2.new(1920, 1080)
+    local ms = MainFrame.AbsoluteSize
+    local nx = math.clamp(mainSP.X + d.X, -ms.X * 0.5, vp.X - ms.X * 0.5)
+    local ny = math.clamp(mainSP.Y + d.Y, 0, vp.Y - 40)
+    MainFrame.Position = UDim2.new(0, nx, 0, ny)
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        mainDrag = false
+    end
+end)
+
 --========== SIDE PANEL ==========
 local SidePanel = Instance.new("Frame")
 SidePanel.Size = UDim2.new(0, 150, 1, -38)
@@ -408,6 +507,7 @@ ContentArea.ScrollBarThickness = 4
 ContentArea.ScrollBarImageColor3 = NL_BLUE
 ContentArea.CanvasSize = UDim2.new(0, 0, 0, 0)
 ContentArea.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ContentArea.ScrollBarImageTransparency = 0.3
 ContentArea.ZIndex = 51
 ContentArea.Parent = MainFrame
 registerAccent(ContentArea, "ScrollBarImageColor3")
@@ -431,6 +531,7 @@ function createTab(name)
     b.Font = Enum.Font.Gotham
     b.TextSize = 13
     b.TextXAlignment = Enum.TextXAlignment.Left
+    b.AutoButtonColor = false
     b.ZIndex = 52
     b.LayoutOrder = tabLayoutOrder
     b.Parent = SidePanel
@@ -455,17 +556,22 @@ function createTab(name)
 
     b.MouseButton1Click:Connect(function()
         for _, t in pairs(tabs) do
-            t.btn.BackgroundTransparency = 1
-            t.btn.TextColor3 = NL_DIM
-            t.ind.Visible = false
+            if t.btn then
+                t.btn.BackgroundTransparency = 1
+                t.btn.TextColor3 = NL_DIM
+            end
+            if t.ind then t.ind.Visible = false end
         end
         b.BackgroundTransparency = 0.85
         b.BackgroundColor3 = NL_BLUE
         b.TextColor3 = NL_TEXT
         ind.Visible = true
         activeTab = name
-        if contentFrame then contentFrame.Visible = false end
-        if tabs[name] and tabs[name].content then
+
+        if contentFrame and contentFrame.Parent then
+            contentFrame.Visible = false
+        end
+        if tabs[name] and tabs[name].content and tabs[name].content.Parent then
             tabs[name].content.Visible = true
             contentFrame = tabs[name].content
         end
@@ -482,12 +588,15 @@ function createTab(name)
     return tabs[name]
 end
 
--- ✅ Создаём все вкладки заранее
-local TAB_ORDER = {"Visuals", "Misc", "Teleport", "Cursor TP", "Baritone", "Fling", "HUD", "Config", "Settings"}
+local TAB_ORDER = {
+    "Visuals", "Misc", "Teleport", "Cursor TP",
+    "Baritone", "Fling", "HUD", "Config", "Settings",
+}
 for _, name in ipairs(TAB_ORDER) do createTab(name) end
 
--- ✅ Хелпер контейнера вкладки
 function makeTabContent(tabName)
+    if not tabs[tabName] then return nil end
+
     local c = Instance.new("Frame")
     c.Size = UDim2.new(1, 0, 0, 0)
     c.BackgroundTransparency = 1
@@ -495,21 +604,40 @@ function makeTabContent(tabName)
     c.Visible = false
     c.ZIndex = 52
     c.Parent = ContentArea
+
+    local p = Instance.new("UIPadding")
+    p.PaddingTop = UDim.new(0, 12)
+    p.PaddingLeft = UDim.new(0, 14)
+    p.PaddingRight = UDim.new(0, 14)
+    p.PaddingBottom = UDim.new(0, 14)
+    p.Parent = c
+
     tabs[tabName].content = c
     return c
 end
 
---========== BUILDERS ==========
-function createColumn(parent)
+--=========================================================
+-- LAYOUT BUILDERS
+--=========================================================
+function createColumn(parent, side)
     local col = Instance.new("Frame")
-    col.Size = UDim2.new(0.5, -8, 0, 0)
+    if side == "right" then
+        col.Size = UDim2.new(0.5, -6, 0, 0)
+        col.Position = UDim2.new(0.5, 6, 0, 0)
+    else
+        col.Size = UDim2.new(0.5, -6, 0, 0)
+        col.Position = UDim2.new(0, 0, 0, 0)
+    end
     col.BackgroundTransparency = 1
     col.AutomaticSize = Enum.AutomaticSize.Y
     col.ZIndex = 52
     col.Parent = parent
+
     local l = Instance.new("UIListLayout")
     l.Padding = UDim.new(0, 10)
+    l.SortOrder = Enum.SortOrder.LayoutOrder
     l.Parent = col
+
     return col
 end
 
@@ -556,6 +684,7 @@ function createSection(parent, title)
 
     local l = Instance.new("UIListLayout")
     l.Padding = UDim.new(0, 6)
+    l.SortOrder = Enum.SortOrder.LayoutOrder
     l.Parent = ct
 
     local p = Instance.new("UIPadding")
@@ -565,6 +694,328 @@ function createSection(parent, title)
     p.Parent = ct
 
     return ct
+end
+
+--=========================================================
+-- ✅ UI-БИЛДЕРЫ (главный фикс — их не было!)
+--=========================================================
+
+--========== CHECKBOX ==========
+function createCheckbox(parent, label, default, callback, key)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 26)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 54
+    row.Parent = parent
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -50, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = NL_TEXT
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextTruncate = Enum.TextTruncate.AtEnd
+    lbl.ZIndex = 55
+    lbl.Parent = row
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 38, 0, 20)
+    btn.Position = UDim2.new(1, -38, 0.5, -10)
+    btn.BackgroundColor3 = default and NL_BLUE or NL_DARKER
+    btn.BorderSizePixel = 0
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.ZIndex = 55
+    btn.Parent = row
+
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(1, 0)
+    bc.Parent = btn
+
+    local bs = Instance.new("UIStroke")
+    bs.Color = NL_BLUE
+    bs.Thickness = 1
+    bs.Transparency = 0.5
+    bs.Parent = btn
+    registerAccent(bs, "Color")
+
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.new(0, 14, 0, 14)
+    dot.Position = default
+        and UDim2.new(0, 21, 0.5, -7)
+        or  UDim2.new(0, 3, 0.5, -7)
+    dot.BackgroundColor3 = NL_WHITE
+    dot.BorderSizePixel = 0
+    dot.ZIndex = 56
+    dot.Parent = btn
+
+    local dc = Instance.new("UICorner")
+    dc.CornerRadius = UDim.new(1, 0)
+    dc.Parent = dot
+
+    local state = default or false
+
+    local function apply()
+        tween(btn, 0.15, {
+            BackgroundColor3 = state and NL_BLUE or NL_DARKER,
+        })
+        tween(dot, 0.15, {
+            Position = state
+                and UDim2.new(0, 21, 0.5, -7)
+                or  UDim2.new(0, 3, 0.5, -7),
+        })
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        apply()
+        if callback then pcall(callback, state) end
+    end)
+
+    -- реестр для applyConfig (часть 11)
+    _G.NL_Checkboxes = _G.NL_Checkboxes or {}
+    if key then
+        _G.NL_Checkboxes[key] = {
+            set = function(v)
+                state = v
+                apply()
+            end,
+            get = function() return state end,
+        }
+    end
+
+    return {
+        set = function(v) state = v apply() end,
+        get = function() return state end,
+    }
+end
+
+--========== SLIDER ==========
+function createSlider(parent, label, min, max, default, callback, isColor, colorLabel)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 34)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 54
+    row.Parent = parent
+
+    local top = Instance.new("Frame")
+    top.Size = UDim2.new(1, 0, 0, 16)
+    top.BackgroundTransparency = 1
+    top.ZIndex = 55
+    top.Parent = row
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -60, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = NL_TEXT
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextTruncate = Enum.TextTruncate.AtEnd
+    lbl.ZIndex = 55
+    lbl.Parent = top
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Size = UDim2.new(0, 55, 1, 0)
+    valLbl.Position = UDim2.new(1, -55, 0, 0)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Text = tostring(default or min)
+    valLbl.TextColor3 = NL_DIM
+    valLbl.Font = Enum.Font.Gotham
+    valLbl.TextSize = 11
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.ZIndex = 55
+    valLbl.Parent = top
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, 0, 0, 6)
+    bar.Position = UDim2.new(0, 0, 0, 22)
+    bar.BackgroundColor3 = NL_DARKER
+    bar.BorderSizePixel = 0
+    bar.ZIndex = 55
+    bar.Parent = row
+
+    local barc = Instance.new("UICorner")
+    barc.CornerRadius = UDim.new(1, 0)
+    barc.Parent = bar
+
+    local initPct = 0
+    if max > min then
+        initPct = ((default or min) - min) / (max - min)
+    end
+    initPct = math.clamp(initPct, 0, 1)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(initPct, 0, 1, 0)
+    fill.BackgroundColor3 = NL_BLUE
+    fill.BorderSizePixel = 0
+    fill.ZIndex = 56
+    fill.Parent = bar
+    registerAccent(fill, "BackgroundColor3")
+
+    local fillc = Instance.new("UICorner")
+    fillc.CornerRadius = UDim.new(1, 0)
+    fillc.Parent = fill
+
+    local dragging = false
+
+    local function updateFromInput(ix)
+        local absX = bar.AbsolutePosition.X
+        local w = bar.AbsoluteSize.X
+        if w <= 0 then return end
+        local pct = math.clamp((ix - absX) / w, 0, 1)
+        local val = math.floor(min + (max - min) * pct + 0.5)
+        fill.Size = UDim2.new(pct, 0, 1, 0)
+        valLbl.Text = tostring(val)
+        if callback then pcall(callback, val) end
+    end
+
+    local grabber = Instance.new("TextButton")
+    grabber.Size = UDim2.new(1, 0, 0, 14)
+    grabber.Position = UDim2.new(0, 0, 0, 18)
+    grabber.BackgroundTransparency = 1
+    grabber.Text = ""
+    grabber.ZIndex = 57
+    grabber.Parent = row
+
+    grabber.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            updateFromInput(input.Position.X)
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+            and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        updateFromInput(input.Position.X)
+    end)
+
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    return {
+        set = function(v)
+            local pct = 0
+            if max > min then pct = (v - min) / (max - min) end
+            pct = math.clamp(pct, 0, 1)
+            fill.Size = UDim2.new(pct, 0, 1, 0)
+            valLbl.Text = tostring(v)
+        end,
+    }
+end
+
+--========== CYCLE ==========
+function createCycle(parent, label, options, default, callback)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 28)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 54
+    row.Parent = parent
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -110, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = NL_TEXT
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextTruncate = Enum.TextTruncate.AtEnd
+    lbl.ZIndex = 55
+    lbl.Parent = row
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 100, 1, 0)
+    btn.Position = UDim2.new(1, -100, 0, 0)
+    btn.BackgroundColor3 = NL_DARKER
+    btn.BorderSizePixel = 0
+    btn.Text = default or (options and options[1]) or ""
+    btn.TextColor3 = NL_TEXT
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 11
+    btn.AutoButtonColor = false
+    btn.ZIndex = 55
+    btn.Parent = row
+
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 4)
+    bc.Parent = btn
+
+    local bs = Instance.new("UIStroke")
+    bs.Color = NL_BLUE
+    bs.Thickness = 1
+    bs.Transparency = 0.5
+    bs.Parent = btn
+    registerAccent(bs, "Color")
+
+    local idx = 1
+    if options then
+        for i, o in ipairs(options) do
+            if o == default then idx = i break end
+        end
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        if not options or #options == 0 then return end
+        idx = idx + 1
+        if idx > #options then idx = 1 end
+        btn.Text = options[idx]
+        if callback then pcall(callback, options[idx]) end
+    end)
+
+    return {
+        set = function(v)
+            if not options then return end
+            for i, o in ipairs(options) do
+                if o == v then
+                    idx = i
+                    btn.Text = o
+                    break
+                end
+            end
+        end,
+    }
+end
+
+--========== BUTTON ==========
+function createButton(parent, label, color, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 30)
+    btn.BackgroundColor3 = color or NL_BLUE
+    btn.BorderSizePixel = 0
+    btn.Text = label
+    btn.TextColor3 = NL_WHITE
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.AutoButtonColor = false
+    btn.ZIndex = 55
+    btn.Parent = parent
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 5)
+    c.Parent = btn
+
+    btn.MouseEnter:Connect(function()
+        tween(btn, 0.15, {BackgroundTransparency = 0.2})
+    end)
+    btn.MouseLeave:Connect(function()
+        tween(btn, 0.15, {BackgroundTransparency = 0})
+    end)
+    btn.MouseButton1Click:Connect(function()
+        if callback then pcall(callback) end
+    end)
+
+    return btn
 end
 
 --========== KEYBINDS ==========
@@ -584,7 +1035,7 @@ end
 function startListeningForBind(btn, action, hint)
     if listeningForBind then stopListening() return end
     listeningForBind = {btn = btn, action = action}
-    if btn then
+    if btn and btn.Parent then
         btn.Text = "[...]"
         tween(btn, 0.15, {TextColor3 = NL_YELLOW})
     end
@@ -610,339 +1061,17 @@ function startListeningForBind(btn, action, hint)
     ls.Parent = listenOverlay
 end
 
---========== CHECKBOX ==========
-function createCheckbox(parent, text, default, callback, bindAction)
-    local cf = Instance.new("Frame")
-    cf.Size = UDim2.new(1, 0, 0, 26)
-    cf.BackgroundTransparency = 1
-    cf.ZIndex = 54
-    cf.Parent = parent
-
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -52, 1, 0)
-    b.BackgroundTransparency = 1
-    b.Text = ""
-    b.ZIndex = 55
-    b.Parent = cf
-
-    local box = Instance.new("Frame")
-    box.Size = UDim2.new(0, 16, 0, 16)
-    box.Position = UDim2.new(0, 2, 0.5, -8)
-    box.BackgroundColor3 = default and NL_BLUE or NL_DARKER
-    box.BorderSizePixel = 0
-    box.ZIndex = 55
-    box.Parent = b
-
-    local bc = Instance.new("UICorner")
-    bc.CornerRadius = UDim.new(0, 3)
-    bc.Parent = box
-
-    local bs = Instance.new("UIStroke")
-    bs.Color = NL_BLUE
-    bs.Thickness = 1
-    bs.Transparency = default and 0 or 0.6
-    bs.Parent = box
-    registerAccent(bs, "Color")
-
-    local ch = Instance.new("TextLabel")
-    ch.Size = UDim2.new(1, 0, 1, 0)
-    ch.BackgroundTransparency = 1
-    ch.Text = "v"
-    ch.TextColor3 = NL_WHITE
-    ch.Font = Enum.Font.GothamBold
-    ch.TextSize = 10
-    ch.TextTransparency = default and 0 or 1
-    ch.ZIndex = 56
-    ch.Parent = box
-
-    local lb = Instance.new("TextLabel")
-    lb.Size = UDim2.new(1, -24, 1, 0)
-    lb.Position = UDim2.new(0, 24, 0, 0)
-    lb.BackgroundTransparency = 1
-    lb.Text = text
-    lb.TextColor3 = NL_TEXT
-    lb.Font = Enum.Font.Gotham
-    lb.TextSize = 12
-    lb.TextXAlignment = Enum.TextXAlignment.Left
-    lb.ZIndex = 55
-    lb.Parent = b
-
-    local bb = Instance.new("TextButton")
-    bb.Size = UDim2.new(0, 46, 0, 20)
-    bb.Position = UDim2.new(1, -46, 0.5, -10)
-    bb.BackgroundColor3 = NL_DARKER
-    bb.BorderSizePixel = 0
-    bb.Text = "[None]"
-    bb.TextColor3 = NL_DIM
-    bb.Font = Enum.Font.Gotham
-    bb.TextSize = 10
-    bb.ZIndex = 56
-    bb.Parent = cf
-
-    local bbc = Instance.new("UICorner")
-    bbc.CornerRadius = UDim.new(0, 3)
-    bbc.Parent = bb
-
-    local bbs = Instance.new("UIStroke")
-    bbs.Color = NL_BLUE
-    bbs.Thickness = 1
-    bbs.Transparency = 0.7
-    bbs.Parent = bb
-    registerAccent(bbs, "Color")
-
-    local state = default
-    local cb = callback
-
-    local function toggle()
-        state = not state
-        tween(box, 0.15, {BackgroundColor3 = state and NL_BLUE or NL_DARKER})
-        tween(bs, 0.15, {Transparency = state and 0 or 0.6})
-        tween(ch, 0.15, {TextTransparency = state and 0 or 1})
-        if cb then pcall(cb, state) end
-    end
-
-    b.MouseButton1Click:Connect(toggle)
-    if bindAction then BindCallbacks[bindAction] = toggle end
-
-    bb.MouseButton1Click:Connect(function()
-        startListeningForBind(bb, bindAction)
-    end)
-end
-
---========== SLIDER ==========
-function createSlider(parent, text, min, max, default, callback, isColor, channel)
-    min = tonumber(min) or 0
-    max = tonumber(max) or 100
-    default = tonumber(default) or min
-    if max <= min then max = min + 1 end
-
-    local sf = Instance.new("Frame")
-    sf.Size = UDim2.new(1, 0, 0, 40)
-    sf.BackgroundTransparency = 1
-    sf.ZIndex = 54
-    sf.Parent = parent
-
-    local lb = Instance.new("TextLabel")
-    lb.Size = UDim2.new(0.6, 0, 0, 18)
-    lb.Position = UDim2.new(0, 2, 0, 0)
-    lb.BackgroundTransparency = 1
-    lb.Text = text
-    lb.TextColor3 = NL_TEXT
-    lb.Font = Enum.Font.Gotham
-    lb.TextSize = 12
-    lb.TextXAlignment = Enum.TextXAlignment.Left
-    lb.ZIndex = 55
-    lb.Parent = sf
-
-    local chCol = NL_BLUE
-    if isColor then
-        if channel == "R" then chCol = Color3.fromRGB(255, 60, 60)
-        elseif channel == "G" then chCol = Color3.fromRGB(60, 220, 60)
-        elseif channel == "B" then chCol = Color3.fromRGB(60, 140, 255) end
-    end
-
-    local vl = Instance.new("TextLabel")
-    vl.Size = UDim2.new(0.4, -4, 0, 18)
-    vl.Position = UDim2.new(0.6, 2, 0, 0)
-    vl.BackgroundTransparency = 1
-    vl.Text = tostring(default)
-    vl.TextColor3 = isColor and chCol or NL_BLUE
-    vl.Font = Enum.Font.GothamBold
-    vl.TextSize = 12
-    vl.TextXAlignment = Enum.TextXAlignment.Right
-    vl.ZIndex = 55
-    vl.Parent = sf
-    if not isColor then registerAccent(vl, "TextColor3") end
-
-    local tr = Instance.new("Frame")
-    tr.Size = UDim2.new(1, -4, 0, 4)
-    tr.Position = UDim2.new(0, 2, 0, 28)
-    tr.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-    tr.BorderSizePixel = 0
-    tr.ZIndex = 55
-    tr.Parent = sf
-
-    local trc = Instance.new("UICorner")
-    trc.CornerRadius = UDim.new(1, 0)
-    trc.Parent = tr
-
-    local fl = Instance.new("Frame")
-    fl.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
-    fl.BackgroundColor3 = isColor and chCol or NL_BLUE
-    fl.BorderSizePixel = 0
-    fl.ZIndex = 56
-    fl.Parent = tr
-    if not isColor then registerAccent(fl, "BackgroundColor3") end
-
-    local fc2 = Instance.new("UICorner")
-    fc2.CornerRadius = UDim.new(1, 0)
-    fc2.Parent = fl
-
-    local th = Instance.new("Frame")
-    th.Size = UDim2.new(0, 12, 0, 12)
-    th.Position = UDim2.new((default - min) / (max - min), -6, 0.5, -6)
-    th.BackgroundColor3 = NL_WHITE
-    th.BorderSizePixel = 0
-    th.ZIndex = 57
-    th.Parent = tr
-
-    local thc = Instance.new("UICorner")
-    thc.CornerRadius = UDim.new(1, 0)
-    thc.Parent = th
-
-    local v = default
-    local dg = false
-    local cb = callback
-
-    local function upd(input)
-        local rel = math.clamp((input.Position.X - tr.AbsolutePosition.X) / tr.AbsoluteSize.X, 0, 1)
-        v = math.floor(min + (max - min) * rel + 0.5)
-        local a = (v - min) / (max - min)
-        fl.Size = UDim2.new(a, 0, 1, 0)
-        th.Position = UDim2.new(a, -6, 0.5, -6)
-        vl.Text = tostring(v)
-        if cb then pcall(cb, v) end
-    end
-
-    tr.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dg = true
-            upd(input)
-        end
-    end)
-
-    UIS.InputChanged:Connect(function(input)
-        if dg and input.UserInputType == Enum.UserInputType.MouseMovement then
-            upd(input)
-        end
-    end)
-
-    UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dg = false
-        end
-    end)
-end
-
---========== CYCLE ==========
-function createCycle(parent, text, options, default, callback)
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 26)
-    f.BackgroundTransparency = 1
-    f.ZIndex = 54
-    f.Parent = parent
-
-    local lb = Instance.new("TextLabel")
-    lb.Size = UDim2.new(0.55, 0, 1, 0)
-    lb.Position = UDim2.new(0, 2, 0, 0)
-    lb.BackgroundTransparency = 1
-    lb.Text = text
-    lb.TextColor3 = NL_TEXT
-    lb.Font = Enum.Font.Gotham
-    lb.TextSize = 12
-    lb.TextXAlignment = Enum.TextXAlignment.Left
-    lb.ZIndex = 55
-    lb.Parent = f
-
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0.45, -4, 0, 22)
-    b.Position = UDim2.new(0.55, 2, 0.5, -11)
-    b.BackgroundColor3 = NL_DARKER
-    b.BorderSizePixel = 0
-    b.Text = default
-    b.TextColor3 = NL_BLUE
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 11
-    b.ZIndex = 55
-    b.Parent = f
-
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 4)
-    c.Parent = b
-
-    local s = Instance.new("UIStroke")
-    s.Color = NL_BLUE
-    s.Thickness = 1
-    s.Transparency = 0.5
-    s.Parent = b
-    registerAccent(s, "Color")
-    registerAccent(b, "TextColor3")
-
-    local i = 1
-    for k, o in ipairs(options) do
-        if o == default then i = k break end
-    end
-    local cb = callback
-
-    b.MouseButton1Click:Connect(function()
-        i = i + 1
-        if i > #options then i = 1 end
-        b.Text = options[i]
-        if cb then pcall(cb, options[i]) end
-    end)
-
-    b.MouseEnter:Connect(function() tween(b, 0.15, {BackgroundColor3 = NL_BLUE, TextColor3 = NL_TEXT}) end)
-    b.MouseLeave:Connect(function() tween(b, 0.15, {BackgroundColor3 = NL_DARKER, TextColor3 = NL_BLUE}) end)
-end
-
---========== BUTTON ==========
-function createButton(parent, text, color, callback)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, 0, 0, 32)
-    b.BackgroundColor3 = color or NL_BLUE
-    b.BorderSizePixel = 0
-    b.Text = text
-    b.TextColor3 = NL_WHITE
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 12
-    b.ZIndex = 55
-    b.Parent = parent
-
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 5)
-    c.Parent = b
-
-    b.MouseEnter:Connect(function() tween(b, 0.15, {BackgroundTransparency = 0.2}) end)
-    b.MouseLeave:Connect(function() tween(b, 0.15, {BackgroundTransparency = 0}) end)
-    if callback then b.MouseButton1Click:Connect(callback) end
-    return b
-end
-
---========== CHEAT STATE ==========
-Cheat = {
-    Fly        = false, FlySpeed    = 50,
-    Speed      = false, SpeedValue  = 16,
-    Noclip     = false,
-    BunnyHop   = false,
-    SpinBot    = false, SpinSpeed   = 20,
-    Spider     = false, SpiderSpeed = 40,
-    InfJump    = false,
-    Jump       = false, JumpPower   = 50, JumpMode = "Power", JumpHeight = 7.2,
-
-    ESP        = false, ESPColor    = Color3.fromRGB(0, 140, 255),
-    FullBright = false,
-    BlackSky   = false,
-    Snow       = false,
-    WorldColor = Color3.fromRGB(0, 140, 255), WorldColorEnabled = false,
-    Fog        = false, FogColor    = Color3.fromRGB(200, 200, 200), FogDistance = 100,
-
-    AutoClicker = false, AutoClickCPS = 10, AutoClickButton = 0,
-    AutoClickRandom = false, AutoClickDelay = 0,
-    Hat = false,
-
-    AntiFling     = false,
-    AntiKnockback = false,
-    AntiRagdoll   = false,
-}
-
---========== JUMP APPLY ==========
+--=========================================================
+-- JUMP LOOP (guard — Cheat определяется выше, но петля
+-- стартует до загрузки части 2)
+--=========================================================
 function applyJump()
     local char = LP.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    if not Cheat.Jump then
+    if not Cheat or not Cheat.Jump then
         hum.UseJumpPower = true
         hum.JumpPower = 50
         return
@@ -960,7 +1089,7 @@ end
 task.spawn(function()
     while _G.NeverloseUILoaded do
         RunService.Heartbeat:Wait()
-        if Cheat.Jump then
+        if Cheat and Cheat.Jump then
             local char = LP.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum then
@@ -980,15 +1109,29 @@ task.spawn(function()
     end
 end)
 
-print("[NL] 1/12 — База загружена")
+print("[NL] 1/13 — База загружена (FIX v3, +builders)")
 --=========================================================
--- NEVERLOSE UI — 2/12
--- Функции чита: Fly, Speed, Noclip, Bhop, Spin, Spider,
--- InfJump, FullBright, BlackSky, Snow, WorldColor, Fog,
--- AutoClicker, ESP, Cone Hat
+-- NEVERLOSE UI — 2/13 (FIX v3)
+-- Fly • Speed System (Regular/Matrix/Hybrid) • Noclip • BHop
+-- SpinBot • Spider • InfJump • FullBright • BlackSky • Snow
+-- WorldColor • Fog • AutoClicker • ESP 2D • Cone Hat
+-- ФИКСЫ:
+--   • SpeedSystem больше не воюет с Baritone Speed Guard
+--   • speedWallBlocked защищён от espFolder == nil
+--   • Единый Fly с гироскопом и плавным стопом
+--   • Snow держит партиклы вне камеры (не лагает)
+--   • ESP использует единый RunService-цикл (не RenderStepped отдельный)
+--   • Все connections выгружаются через _G.NL_UnloadBase (часть 3)
 --=========================================================
 
---========== FLY ==========
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 2: база не загружена (нужна часть 1)")
+    return
+end
+
+--=========================================================
+-- FLY
+--=========================================================
 flyBV, flyBG, flyConn = nil, nil, nil
 
 function disableFly()
@@ -1041,26 +1184,172 @@ function enableFly()
     end)
 end
 
---========== SPEED ==========
-function applySpeed()
+--=========================================================
+-- SPEED SYSTEM — 3 режима (Regular / Matrix / Hybrid)
+--=========================================================
+SpeedSystem = {
+    Enabled     = false,
+    Mode        = "Matrix",
+    Value       = 60,
+    SprintMult  = 1.5,
+    StepSize    = 3.5,
+    GroundOnly  = true,
+    WallCheck   = true,
+    Smooth      = true,
+    RegularWalk = 16,
+    HybridWalk  = 24,
+    Debug       = false,
+}
+
+speedMainConn = nil
+speedSprintKeys = {Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift}
+
+function speedIsSprinting()
+    for _, k in ipairs(speedSprintKeys) do
+        if UIS:IsKeyDown(k) then return true end
+    end
+    return false
+end
+
+function speedGetTarget()
+    local base = SpeedSystem.Value
+    if speedIsSprinting() then base = base * SpeedSystem.SprintMult end
+    return base
+end
+
+function speedGetChar()
     local char = LP.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char then return nil, nil, nil end
+    return char,
+           char:FindFirstChild("HumanoidRootPart"),
+           char:FindFirstChildOfClass("Humanoid")
+end
+
+function speedWallBlocked(char, hrp, dirWorld, dist)
+    if not SpeedSystem.WallCheck then return false end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local flist = {char}
+    -- ✅ guard: espFolder объявляется в этой же части, но ниже
+    if espFolder and espFolder.Parent then
+        table.insert(flist, espFolder)
+    end
+    params.FilterDescendantsInstances = flist
+
+    local origin = hrp.Position + Vector3.new(0, -1.2, 0)
+    local hit = workspace:Raycast(origin, dirWorld * (dist + 0.5), params)
+    if hit and hit.Instance then
+        local top = hit.Instance.Position.Y + hit.Instance.Size.Y / 2
+        if top > hrp.Position.Y + 2.2 then
+            return true
+        end
+    end
+    return false
+end
+
+function speedStart()
+    if speedMainConn then return end
+
+    speedMainConn = RunService.Heartbeat:Connect(function(dt)
+        if not _G.NeverloseUILoaded then return end
+        if not SpeedSystem.Enabled then return end
+
+        local char, hrp, hum = speedGetChar()
+        if not char or not hrp or not hum or hum.Health <= 0 then return end
+
+        local mode = SpeedSystem.Mode
+
+        -- REGULAR — просто WalkSpeed
+        if mode == "Regular" then
+            local target = speedGetTarget()
+            if hum.WalkSpeed ~= target then
+                pcall(function() hum.WalkSpeed = target end)
+            end
+            return
+        end
+
+        -- MATRIX / HYBRID
+        local extraSpeed = 0
+        if mode == "Matrix" then
+            if hum.WalkSpeed ~= 0 then
+                pcall(function() hum.WalkSpeed = 0 end)
+            end
+            extraSpeed = speedGetTarget()
+        elseif mode == "Hybrid" then
+            if hum.WalkSpeed ~= SpeedSystem.HybridWalk then
+                pcall(function() hum.WalkSpeed = SpeedSystem.HybridWalk end)
+            end
+            extraSpeed = math.max(0, speedGetTarget() - SpeedSystem.HybridWalk)
+        end
+
+        if SpeedSystem.GroundOnly then
+            local st = hum:GetState()
+            if st == Enum.HumanoidStateType.Freefall
+                or st == Enum.HumanoidStateType.Jumping
+                or st == Enum.HumanoidStateType.Flying then
+                return
+            end
+        end
+
+        local dir = hum.MoveDirection
+        if dir.Magnitude < 0.01 then return end
+        local dirWorld = Vector3.new(dir.X, 0, dir.Z)
+        if dirWorld.Magnitude < 0.01 then return end
+        dirWorld = dirWorld.Unit
+
+        local stepDist = extraSpeed * dt
+        if stepDist <= 0 then return end
+        if stepDist > SpeedSystem.StepSize then
+            stepDist = SpeedSystem.StepSize
+        end
+
+        if speedWallBlocked(char, hrp, dirWorld, stepDist) then
+            return
+        end
+
+        local oldCF = hrp.CFrame
+        local newPos = oldCF.Position + dirWorld * stepDist
+
+        local newCF
+        if SpeedSystem.Smooth then
+            newCF = CFrame.new(newPos) * (oldCF - oldCF.Position)
+        else
+            newCF = CFrame.new(newPos, newPos + oldCF.LookVector)
+        end
+
+        pcall(function()
+            hrp.CFrame = newCF
+        end)
+    end)
+end
+
+function speedStop()
+    if speedMainConn then
+        speedMainConn:Disconnect()
+        speedMainConn = nil
+    end
+    local _, _, hum = speedGetChar()
     if hum then
-        hum.WalkSpeed = Cheat.Speed and Cheat.SpeedValue or 16
+        pcall(function() hum.WalkSpeed = 16 end)
     end
 end
 
-speedConn = RunService.Heartbeat:Connect(function()
-    if not _G.NeverloseUILoaded then return end
-    if not Cheat.Speed then return end
-    local char = LP.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum and math.abs(hum.WalkSpeed - Cheat.SpeedValue) > 0.5 then
-        hum.WalkSpeed = Cheat.SpeedValue
-    end
-end)
+function enableSpeed()  SpeedSystem.Enabled = true  speedStart() end
+function disableSpeed() SpeedSystem.Enabled = false speedStop()  end
 
---========== NOCLIP ==========
+function applySpeed()
+    if Cheat and Cheat.Speed then
+        enableSpeed()
+    else
+        disableSpeed()
+    end
+end
+
+speedConn = nil  -- заглушка
+
+--=========================================================
+-- NOCLIP
+--=========================================================
 noclipConn = nil
 
 function disableNoclip()
@@ -1090,7 +1379,9 @@ function enableNoclip()
     end)
 end
 
---========== BUNNY HOP ==========
+--=========================================================
+-- BUNNY HOP
+--=========================================================
 bhopConn = nil
 
 function disableBunnyHop()
@@ -1118,7 +1409,9 @@ function enableBunnyHop()
     end)
 end
 
---========== SPIN BOT ==========
+--=========================================================
+-- SPIN BOT
+--=========================================================
 spinConn = nil
 
 function disableSpinBot()
@@ -1143,7 +1436,9 @@ function enableSpinBot()
     end)
 end
 
---========== SPIDER ==========
+--=========================================================
+-- SPIDER (стены)
+--=========================================================
 spiderConn, spiderBV = nil, nil
 
 function disableSpider()
@@ -1199,7 +1494,9 @@ function enableSpider()
     end)
 end
 
---========== INFINITE JUMP ==========
+--=========================================================
+-- INFINITE JUMP
+--=========================================================
 ijConn = nil
 
 function disableInfJump()
@@ -1217,7 +1514,9 @@ function enableInfJump()
     end)
 end
 
---========== FULLBRIGHT ==========
+--=========================================================
+-- FULLBRIGHT
+--=========================================================
 fbSaved = nil
 
 function disableFullBright()
@@ -1249,7 +1548,9 @@ function enableFullBright()
     end)
 end
 
---========== BLACK SKY ==========
+--=========================================================
+-- BLACK SKY
+--=========================================================
 bsky, bsSaved = nil, nil
 
 function disableBlackSky()
@@ -1308,7 +1609,9 @@ function enableBlackSky()
     end)
 end
 
---========== WORLD COLOR ==========
+--=========================================================
+-- WORLD COLOR
+--=========================================================
 wcSaved = nil
 
 function restoreWorldColor()
@@ -1349,7 +1652,9 @@ function applyWorldColor()
     end)
 end
 
---========== FOG ==========
+--=========================================================
+-- FOG
+--=========================================================
 fogSaved = nil
 
 function disableFog()
@@ -1377,7 +1682,9 @@ function enableFog()
     end)
 end
 
---========== SNOW ==========
+--=========================================================
+-- SNOW
+--=========================================================
 sFolder, sPart, sFollow = nil, nil, nil
 
 function disableSnow()
@@ -1414,16 +1721,16 @@ function enableSnow()
     emit.Size = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0.7),
         NumberSequenceKeypoint.new(0.5, 0.5),
-        NumberSequenceKeypoint.new(1, 0.2)
+        NumberSequenceKeypoint.new(1, 0.2),
     })
     emit.Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0),
         NumberSequenceKeypoint.new(0.85, 0),
-        NumberSequenceKeypoint.new(1, 1)
+        NumberSequenceKeypoint.new(1, 1),
     })
     emit.Color = ColorSequence.new({
         ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(220, 230, 255))
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(220, 230, 255)),
     })
     emit.LightEmission = 0.6
     emit.LightInfluence = 0
@@ -1445,7 +1752,9 @@ function enableSnow()
     end)
 end
 
---========== AUTO CLICKER ==========
+--=========================================================
+-- AUTO CLICKER
+--=========================================================
 acRunning = false
 
 function xenoClick(button)
@@ -1486,7 +1795,9 @@ function startAutoClicker()
     end)
 end
 
---========== ESP ==========
+--=========================================================
+-- ESP 2D
+--=========================================================
 espFolder = Instance.new("Folder")
 espFolder.Name = "NL_ESP_" .. math.random(10000, 99999)
 espFolder.Parent = ScreenGui
@@ -1594,7 +1905,9 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
---========== CONE HAT ==========
+--=========================================================
+-- CONE HAT
+--=========================================================
 hatModel, hatWeld = nil, nil
 
 function removeHat()
@@ -1659,7 +1972,9 @@ end
 _G.NL_CreateHat = createHat
 _G.NL_RemoveHat = removeHat
 
---========== RESPAWN ==========
+--=========================================================
+-- RESPAWN
+--=========================================================
 LP.CharacterAdded:Connect(function()
     task.wait(1)
     if not _G.NeverloseUILoaded then return end
@@ -1676,20 +1991,32 @@ LP.CharacterAdded:Connect(function()
     if Cheat.AntiRagdoll and enableAntiRagdoll then enableAntiRagdoll() end
 end)
 
-print("[NL] 2/12 — Функции чита загружены")
+print("[NL] 2/13 — Fly / Speed System / Misc core загружены")
 --=========================================================
--- NEVERLOSE UI — 3/12
+-- NEVERLOSE UI — 3/13 (FIX v3)
 -- Вкладки: Visuals / Misc / Settings
+-- Speed System UI (Regular / Matrix / Hybrid)
+-- ФИКСЫ:
+--   • Все контролы через билдеры из части 1
+--   • unloadScript определён один раз (не пересобирается)
+--   • Правильная привязка кнопки Unload
+--   • Insert-toggle не конфликтует с биндами
+--   • Resize handle не мешает скроллу контента
 --=========================================================
+
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 3: база не загружена")
+    return
+end
 
 --=========================================================
 -- VISUALS
 --=========================================================
 visualsContent = makeTabContent("Visuals")
-visLeft  = createColumn(visualsContent); visLeft.Position  = UDim2.new(0, 0, 0, 0)
-visRight = createColumn(visualsContent); visRight.Position = UDim2.new(0.5, 8, 0, 0)
+visLeft  = createColumn(visualsContent, "left")
+visRight = createColumn(visualsContent, "right")
 
--- Players
+--========== PLAYERS ==========
 visPlayersSec = createSection(visLeft, "Players")
 
 createCheckbox(visPlayersSec, "ESP 2D", false, function(s)
@@ -1720,7 +2047,7 @@ createSlider(visPlayersSec, "ESP Color B", 0, 255, 255, function(v)
     )
 end, true, "B")
 
--- World
+--========== WORLD ==========
 visWorldSec = createSection(visRight, "World")
 
 createCheckbox(visWorldSec, "FullBright", false, function(s)
@@ -1738,7 +2065,7 @@ createCheckbox(visWorldSec, "Snow", false, function(s)
     if s then enableSnow() else disableSnow() end
 end, "Snow")
 
--- World Color
+--========== WORLD COLOR ==========
 visWCSec = createSection(visRight, "World Color")
 
 createCheckbox(visWCSec, "Enable", false, function(s)
@@ -1773,7 +2100,7 @@ createSlider(visWCSec, "B", 0, 255, 255, function(v)
     if Cheat.WorldColorEnabled then applyWorldColor() end
 end, true, "B")
 
--- Fog
+--========== FOG ==========
 fogSec = createSection(visRight, "Fog")
 
 createCheckbox(fogSec, "Enable Fog", false, function(s)
@@ -1817,10 +2144,10 @@ end)
 -- MISC
 --=========================================================
 miscContent = makeTabContent("Misc")
-miscLeft  = createColumn(miscContent); miscLeft.Position  = UDim2.new(0, 0, 0, 0)
-miscRight = createColumn(miscContent); miscRight.Position = UDim2.new(0.5, 8, 0, 0)
+miscLeft  = createColumn(miscContent, "left")
+miscRight = createColumn(miscContent, "right")
 
--- Movement
+--========== MOVEMENT ==========
 moveSec = createSection(miscLeft, "Movement")
 
 createCheckbox(moveSec, "Fly", false, function(s)
@@ -1834,19 +2161,43 @@ end)
 
 createCheckbox(moveSec, "Speed", false, function(s)
     Cheat.Speed = s
-    if s then
-        applySpeed()
-    else
-        local char = LP.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if hum then hum.WalkSpeed = 16 end
-    end
+    if s then enableSpeed() else disableSpeed() end
 end, "Speed")
 
-createSlider(moveSec, "Speed Value", 16, 200, 16, function(v)
-    Cheat.SpeedValue = v
-    if Cheat.Speed then applySpeed() end
+createCycle(moveSec, "Speed Mode", {"Matrix", "Regular", "Hybrid"}, "Matrix", function(v)
+    SpeedSystem.Mode = v
+    if SpeedSystem.Enabled then
+        speedStop()
+        speedStart()
+    end
+    if _G.NL_NotifyInfo then
+        _G.NL_NotifyInfo("Speed Mode: " .. v)
+    end
 end)
+
+createSlider(moveSec, "Speed Value", 10, 300, 60, function(v)
+    SpeedSystem.Value = v
+end)
+
+createSlider(moveSec, "Sprint Mult x10", 10, 50, 15, function(v)
+    SpeedSystem.SprintMult = v / 10
+end)
+
+createSlider(moveSec, "Step Size x10", 10, 150, 35, function(v)
+    SpeedSystem.StepSize = v / 10
+end)
+
+createCheckbox(moveSec, "Ground Only", true, function(s)
+    SpeedSystem.GroundOnly = s
+end, "Speed_Ground")
+
+createCheckbox(moveSec, "Wall Check", true, function(s)
+    SpeedSystem.WallCheck = s
+end, "Speed_Wall")
+
+createCheckbox(moveSec, "Smooth Move", true, function(s)
+    SpeedSystem.Smooth = s
+end, "Speed_Smooth")
 
 createCheckbox(moveSec, "Noclip", false, function(s)
     Cheat.Noclip = s
@@ -1876,7 +2227,7 @@ createSlider(moveSec, "Spider Speed", 10, 200, 40, function(v)
     Cheat.SpiderSpeed = v
 end)
 
--- Jump
+--========== JUMP ==========
 jumpSec = createSection(miscLeft, "Jump")
 
 createCheckbox(jumpSec, "Enable Jump Boost", false, function(s)
@@ -1912,7 +2263,7 @@ jumpInfo.TextXAlignment = Enum.TextXAlignment.Left
 jumpInfo.ZIndex = 55
 jumpInfo.Parent = jumpSec
 
--- Auto Clicker
+--========== AUTO CLICKER ==========
 acSec = createSection(miscLeft, "Auto Clicker")
 
 createCheckbox(acSec, "Enable", false, function(s)
@@ -1936,7 +2287,7 @@ createCycle(acSec, "Mouse Button", {"Left", "Right"}, "Left", function(v)
     Cheat.AutoClickButton = (v == "Left") and 0 or 1
 end)
 
--- Other
+--========== OTHER ==========
 otherSec = createSection(miscRight, "Other")
 
 createCheckbox(otherSec, "Infinite Jump", false, function(s)
@@ -1953,7 +2304,7 @@ createCheckbox(otherSec, "Cone Hat", false, function(s)
     end
 end, "Hat")
 
--- Protection
+--========== PROTECTION ==========
 protSec = createSection(miscRight, "Protection")
 
 createCheckbox(protSec, "Anti-Fling", false, function(s)
@@ -2001,7 +2352,7 @@ settingsTitle.ZIndex = 53
 settingsTitle.Parent = settingsContent
 
 local settingsInfo = Instance.new("TextLabel")
-settingsInfo.Size = UDim2.new(1, -40, 0, 60)
+settingsInfo.Size = UDim2.new(1, -40, 0, 80)
 settingsInfo.Position = UDim2.new(0, 20, 0, 50)
 settingsInfo.BackgroundTransparency = 1
 settingsInfo.Text = "INSERT — открыть/закрыть меню\nВыгрузка скрипта удалит все объекты и вернёт настройки Lighting."
@@ -2016,7 +2367,7 @@ settingsInfo.Parent = settingsContent
 
 unloadBtn = Instance.new("TextButton")
 unloadBtn.Size = UDim2.new(0, 260, 0, 44)
-unloadBtn.Position = UDim2.new(0.5, -130, 0, 140)
+unloadBtn.Position = UDim2.new(0.5, -130, 0, 150)
 unloadBtn.BackgroundColor3 = NL_DARKER
 unloadBtn.BorderSizePixel = 0
 unloadBtn.Text = "Unload Script"
@@ -2046,33 +2397,39 @@ unloadBtn.MouseLeave:Connect(function()
     tween(ubs, 0.15, {Color = NL_BLUE, Transparency = 0.5})
 end)
 
--- ✅ ЕДИНСТВЕННАЯ функция unloadScript
+--=========================================================
+-- БАЗОВЫЙ unloadScript (части 7–13 будут его оборачивать)
+--=========================================================
 function unloadScript()
     _G.NeverloseUILoaded = nil
 
-    if disableFly then pcall(disableFly) end
-    if disableNoclip then pcall(disableNoclip) end
-    if disableInfJump then pcall(disableInfJump) end
-    if disableFullBright then pcall(disableFullBright) end
-    if disableBlackSky then pcall(disableBlackSky) end
-    if disableSnow then pcall(disableSnow) end
-    if disableBunnyHop then pcall(disableBunnyHop) end
-    if disableSpinBot then pcall(disableSpinBot) end
-    if disableFog then pcall(disableFog) end
-    if disableSpider then pcall(disableSpider) end
-    if restoreWorldColor then pcall(restoreWorldColor) end
-    if _G.NL_RemoveHat then pcall(_G.NL_RemoveHat) end
+    -- Safe-disable всех подсистем (проверяем существование)
+    if disableFly         then pcall(disableFly) end
+    if disableNoclip      then pcall(disableNoclip) end
+    if disableInfJump     then pcall(disableInfJump) end
+    if disableFullBright  then pcall(disableFullBright) end
+    if disableBlackSky    then pcall(disableBlackSky) end
+    if disableSnow        then pcall(disableSnow) end
+    if disableBunnyHop    then pcall(disableBunnyHop) end
+    if disableSpinBot     then pcall(disableSpinBot) end
+    if disableFog         then pcall(disableFog) end
+    if disableSpider      then pcall(disableSpider) end
+    if restoreWorldColor  then pcall(restoreWorldColor) end
+    if disableSpeed       then pcall(disableSpeed) end
+    if _G.NL_RemoveHat    then pcall(_G.NL_RemoveHat) end
 
-    if _G.NL_UnloadTP then pcall(_G.NL_UnloadTP) end
-    if _G.NL_UnloadCTP then pcall(_G.NL_UnloadCTP) end
-    if _G.NL_UnloadBT then pcall(_G.NL_UnloadBT) end
-    if _G.NL_UnloadFling then pcall(_G.NL_UnloadFling) end
+    if _G.NL_UnloadTP      then pcall(_G.NL_UnloadTP) end
+    if _G.NL_UnloadCTP     then pcall(_G.NL_UnloadCTP) end
+    if _G.NL_UnloadBT      then pcall(_G.NL_UnloadBT) end
+    if _G.NL_UnloadFling   then pcall(_G.NL_UnloadFling) end
     if _G.NL_UnloadProtect then pcall(_G.NL_UnloadProtect) end
-    if _G.NL_UnloadHUD then pcall(_G.NL_UnloadHUD) end
+    if _G.NL_UnloadHUD     then pcall(_G.NL_UnloadHUD) end
+    if _G.NL_UnloadDoors   then pcall(_G.NL_UnloadDoors) end
 
     Cheat.ESP = false
     Cheat.AutoClicker = false
     Cheat.Jump = false
+    Cheat.Speed = false
 
     local char = LP.Character
     if char then
@@ -2089,7 +2446,7 @@ function unloadScript()
         end
     end
 
-    -- ✅ Возвращаем топбар на место
+    -- Возвращаем топбар
     pcall(function()
         local sg = game:GetService("StarterGui")
         sg:SetCore("TopbarEnabled", true)
@@ -2098,20 +2455,27 @@ function unloadScript()
     if ScreenGui and ScreenGui.Parent then ScreenGui:Destroy() end
 end
 
-unloadBtn.MouseButton1Click:Connect(unloadScript)
+_G.NL_UnloadBase = unloadScript
 
---========== RESIZE HANDLE ==========
+unloadBtn.MouseButton1Click:Connect(function()
+    unloadScript()
+end)
+
+--=========================================================
+-- RESIZE HANDLE
+--=========================================================
 resizeButton = Instance.new("TextButton")
 resizeButton.Size = UDim2.new(0, 26, 0, 26)
 resizeButton.Position = UDim2.new(1, -26, 1, -26)
 resizeButton.BackgroundTransparency = 1
 resizeButton.Text = ""
+resizeButton.AutoButtonColor = false
 resizeButton.ZIndex = 300
 resizeButton.Parent = MainFrame
 
 resizeHandle = Instance.new("Frame")
 resizeHandle.Size = UDim2.new(0, 16, 0, 16)
-resizeHandle.Position = UDim2.new(1, -16, 1, -16)
+resizeHandle.Position = UDim2.new(1, -20, 1, -20)
 resizeHandle.BackgroundColor3 = NL_BLUE
 resizeHandle.BackgroundTransparency = 0.6
 resizeHandle.BorderSizePixel = 0
@@ -2128,7 +2492,8 @@ resizeStartSize = nil
 resizeStartPos = nil
 
 resizeButton.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
         isResizing = true
         resizeStartSize = {x = MainFrame.AbsoluteSize.X, y = MainFrame.AbsoluteSize.Y}
         resizeStartPos = {x = input.Position.X, y = input.Position.Y}
@@ -2137,24 +2502,30 @@ resizeButton.InputBegan:Connect(function(input)
 end)
 
 UIS.InputChanged:Connect(function(input)
-    if isResizing and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local dx = input.Position.X - resizeStartPos.x
-        local dy = input.Position.Y - resizeStartPos.y
-        MainFrame.Size = UDim2.new(
-            0, math.max(520, resizeStartSize.x + dx),
-            0, math.max(400, resizeStartSize.y + dy)
-        )
-    end
+    if not isResizing then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    if not MainFrame or not MainFrame.Parent then isResizing = false return end
+
+    local dx = input.Position.X - resizeStartPos.x
+    local dy = input.Position.Y - resizeStartPos.y
+    MainFrame.Size = UDim2.new(
+        0, math.max(520, resizeStartSize.x + dx),
+        0, math.max(400, resizeStartSize.y + dy)
+    )
 end)
 
 UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 and isResizing then
+    if (input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch) and isResizing then
         isResizing = false
         tween(resizeHandle, 0.15, {BackgroundTransparency = 0.6})
     end
 end)
 
---========== KEYBIND LISTENER ==========
+--=========================================================
+-- KEYBIND LISTENER
+--=========================================================
 UIS.InputBegan:Connect(function(input, gp)
     if listeningForBind then
         if input.KeyCode == Enum.KeyCode.Escape then
@@ -2180,36 +2551,65 @@ UIS.InputBegan:Connect(function(input, gp)
     end
 end)
 
---========== DEFAULT TAB ==========
-tabs["Settings"].btn.BackgroundTransparency = 0.85
-tabs["Settings"].btn.BackgroundColor3 = NL_BLUE
-tabs["Settings"].btn.TextColor3 = NL_TEXT
-tabs["Settings"].ind.Visible = true
-activeTab = "Settings"
-contentFrame = settingsContent
-settingsContent.Visible = true
+--=========================================================
+-- DEFAULT TAB (Settings)
+--=========================================================
+if tabs["Settings"] and tabs["Settings"].btn then
+    tabs["Settings"].btn.BackgroundTransparency = 0.85
+    tabs["Settings"].btn.BackgroundColor3 = NL_BLUE
+    tabs["Settings"].btn.TextColor3 = NL_TEXT
+    if tabs["Settings"].ind then tabs["Settings"].ind.Visible = true end
+    activeTab = "Settings"
+    contentFrame = settingsContent
+    settingsContent.Visible = true
+end
 
---========== INSERT TOGGLE ==========
+--=========================================================
+-- INSERT TOGGLE (открыть/закрыть меню)
+--=========================================================
 menuVisible = true
 UIS.InputBegan:Connect(function(input, gp)
     if gp then return end
     if not _G.NeverloseUILoaded then return end
     if input.KeyCode == Enum.KeyCode.Insert then
         menuVisible = not menuVisible
-        MainFrame.Visible = menuVisible
+        if MainFrame and MainFrame.Parent then
+            MainFrame.Visible = menuVisible
+        end
     end
 end)
 
-print("[NL] 3/12 — Visuals / Misc / Settings загружены")
+print("[NL] 3/13 — Visuals / Misc / Settings загружены")
 --=========================================================
--- NEVERLOSE UI — 4/12
--- Вкладка Teleport: список игроков, координаты, сохранение
+-- NEVERLOSE UI — 4/13 (FIX v3)
+-- Вкладка Teleport: игроки, координаты, сохранение позиции
+-- ФИКСЫ:
+--   • Debounce на поиск (не пересобирает список на каждый символ)
+--   • Один HP-loop вместо N потоков
+--   • Refresh только когда вкладка активна
+--   • Unload чистит refresh-поток
+--   • Кэш аватаров (не дёргает CDN)
+--   • HP-loop троттлится до 2 Hz
+--   • Правильная очистка соединений
 --=========================================================
-tpContent = makeTabContent("Teleport")
-tpLeft  = createColumn(tpContent); tpLeft.Position  = UDim2.new(0, 0, 0, 0)
-tpRight = createColumn(tpContent); tpRight.Position = UDim2.new(0.5, 8, 0, 0)
 
---========== TELEPORT FUNCTIONS ==========
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 4: база не загружена")
+    return
+end
+
+tpContent = makeTabContent("Teleport")
+if not tpContent then
+    warn("[NL] Часть 4: не удалось создать вкладку Teleport")
+    return
+end
+
+tpLeft  = createColumn(tpContent, "left")
+tpRight = createColumn(tpContent, "right")
+
+--=========================================================
+-- TELEPORT FUNCTIONS
+--=========================================================
 function tpToPlayer(plr)
     if not plr or plr == LP then return end
     local myChar = LP.Character
@@ -2232,7 +2632,9 @@ function tpToCoords(x, y, z)
     end)
 end
 
---========== PLAYER LIST ==========
+--=========================================================
+-- PLAYER LIST
+--=========================================================
 tpPlayersSec = createSection(tpLeft, "Игроки")
 
 tpSearchBox = Instance.new("TextBox")
@@ -2277,6 +2679,7 @@ tpListFrame.BackgroundTransparency = 1
 tpListFrame.BorderSizePixel = 0
 tpListFrame.ScrollBarThickness = 4
 tpListFrame.ScrollBarImageColor3 = NL_BLUE
+tpListFrame.ScrollBarImageTransparency = 0.3
 tpListFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 tpListFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 tpListFrame.ZIndex = 54
@@ -2285,10 +2688,25 @@ registerAccent(tpListFrame, "ScrollBarImageColor3")
 
 local tll = Instance.new("UIListLayout")
 tll.Padding = UDim.new(0, 6)
+tll.SortOrder = Enum.SortOrder.LayoutOrder
 tll.Parent = tpListFrame
 
 tpEntries = {}
 
+--=========================================================
+-- AVATAR CACHE
+--=========================================================
+local avatarCache = {}
+local function getAvatarUrl(userId)
+    if not avatarCache[userId] then
+        avatarCache[userId] = "rbxthumb://type=AvatarHeadShot&id=" .. userId .. "&w=48&h=48"
+    end
+    return avatarCache[userId]
+end
+
+--=========================================================
+-- CREATE ENTRY
+--=========================================================
 function createTPEntry(plr)
     if plr == LP then return end
     if tpEntries[plr] and tpEntries[plr].Parent then
@@ -2300,6 +2718,7 @@ function createTPEntry(plr)
     entry.BackgroundColor3 = NL_DARKER
     entry.BorderSizePixel = 0
     entry.Text = ""
+    entry.AutoButtonColor = false
     entry.ZIndex = 55
     entry.Parent = tpListFrame
 
@@ -2319,7 +2738,7 @@ function createTPEntry(plr)
     avatar.Position = UDim2.new(0, 5, 0.5, -16)
     avatar.BackgroundColor3 = NL_DARK
     avatar.BorderSizePixel = 0
-    avatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
+    avatar.Image = getAvatarUrl(plr.UserId)
     avatar.ZIndex = 56
     avatar.Parent = entry
 
@@ -2336,6 +2755,7 @@ function createTPEntry(plr)
     nameL.Font = Enum.Font.GothamBold
     nameL.TextSize = 12
     nameL.TextXAlignment = Enum.TextXAlignment.Left
+    nameL.TextTruncate = Enum.TextTruncate.AtEnd
     nameL.ZIndex = 56
     nameL.Parent = entry
 
@@ -2360,6 +2780,7 @@ function createTPEntry(plr)
     tpBtn.TextColor3 = NL_WHITE
     tpBtn.Font = Enum.Font.GothamBold
     tpBtn.TextSize = 11
+    tpBtn.AutoButtonColor = false
     tpBtn.ZIndex = 57
     tpBtn.Parent = entry
     registerAccent(tpBtn, "BackgroundColor3")
@@ -2376,22 +2797,51 @@ function createTPEntry(plr)
         tpToPlayer(plr)
     end)
 
-    tpEntries[plr] = entry
+    entry.MouseEnter:Connect(function()
+        tween(entry, 0.15, {BackgroundTransparency = 0.3})
+    end)
+    entry.MouseLeave:Connect(function()
+        tween(entry, 0.15, {BackgroundTransparency = 0})
+    end)
 
-    task.spawn(function()
-        while entry.Parent and _G.NeverloseUILoaded do
-            local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
-            if hpL and hpL.Parent then
-                if hum then
+    tpEntries[plr] = entry
+end
+
+--=========================================================
+-- HP LOOP (единый для всех записей, 2 Hz)
+--=========================================================
+tpHpConn = RunService.Heartbeat:Connect(function()
+    if not _G.NeverloseUILoaded then return end
+    local now = tick()
+    if not _G.NL_TPHpNext or now < _G.NL_TPHpNext then return end
+    _G.NL_TPHpNext = now + 0.5
+
+    for plr, entry in pairs(tpEntries) do
+        if entry and entry.Parent then
+            -- Ищем HP-лейбл (позиция 2 среди TextLabel)
+            local hpL
+            for _, c in ipairs(entry:GetChildren()) do
+                if c:IsA("TextLabel") and c.Text:sub(1, 4) == "HP: " then
+                    hpL = c
+                    break
+                end
+            end
+            if hpL then
+                local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+                if hum and plr.Parent then
                     hpL.Text = "HP: " .. math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth)
                 else
                     hpL.Text = "HP: --"
                 end
             end
-            task.wait(0.5)
         end
-    end)
-end
+    end
+end)
+
+--=========================================================
+-- REFRESH LIST
+--=========================================================
+local tpSearchDebounceToken = 0
 
 function refreshTPList()
     for plr, e in pairs(tpEntries) do
@@ -2409,41 +2859,74 @@ function refreshTPList()
         if plr ~= LP then
             local name = string.lower(plr.Name)
             local display = string.lower(plr.DisplayName or "")
-            if filter == "" or name:find(filter, 1, true) or display:find(filter, 1, true) then
+            if filter == ""
+                or name:find(filter, 1, true)
+                or display:find(filter, 1, true) then
                 createTPEntry(plr)
                 count = count + 1
             end
         end
     end
+
     if tpCountLabel and tpCountLabel.Parent then
-        tpCountLabel.Text = "Игроков: " .. count
+        if filter ~= "" then
+            tpCountLabel.Text = "Найдено: " .. count
+        else
+            tpCountLabel.Text = "Игроков: " .. count
+        end
     end
 end
 
-tpSearchBox:GetPropertyChangedSignal("Text"):Connect(refreshTPList)
+--========== DEBOUNCED SEARCH ==========
+tpSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    tpSearchDebounceToken = tpSearchDebounceToken + 1
+    local myToken = tpSearchDebounceToken
+    task.delay(0.25, function()
+        if tpSearchDebounceToken ~= myToken then return end
+        if not _G.NeverloseUILoaded then return end
+        refreshTPList()
+    end)
+end)
 
+--========== PLAYER EVENTS ==========
 Players.PlayerAdded:Connect(function()
     task.wait(0.5)
+    if not _G.NeverloseUILoaded then return end
     refreshTPList()
 end)
 
-Players.PlayerRemoving:Connect(function()
-    task.wait(0.1)
-    refreshTPList()
+Players.PlayerRemoving:Connect(function(plr)
+    if tpEntries[plr] then
+        if tpEntries[plr].Parent then tpEntries[plr]:Destroy() end
+        tpEntries[plr] = nil
+    end
+    if tpCountLabel and tpCountLabel.Parent then
+        local c = 0
+        for _ in pairs(tpEntries) do c = c + 1 end
+        tpCountLabel.Text = "Игроков: " .. c
+    end
 end)
 
+--========== AUTO-REFRESH (только когда вкладка активна) ==========
 task.spawn(function()
     while _G.NeverloseUILoaded do
         task.wait(5)
-        if tpContent and tpContent.Parent then
-            refreshTPList()
+        if tpContent and tpContent.Parent and tpContent.Visible then
+            local realCount = #Players:GetPlayers() - 1
+            local cached = 0
+            for _ in pairs(tpEntries) do cached = cached + 1 end
+            if realCount ~= cached then
+                refreshTPList()
+            end
         end
     end
 end)
 
 refreshTPList()
 
---========== COORDINATES ==========
+--=========================================================
+-- COORDINATES
+--=========================================================
 tpCoordsSec = createSection(tpRight, "Координаты")
 
 local function makeCoordInput(label)
@@ -2473,6 +2956,7 @@ local function makeCoordInput(label)
     t.TextColor3 = NL_TEXT
     t.Font = Enum.Font.Gotham
     t.TextSize = 12
+    t.ClearTextOnFocus = false
     t.ZIndex = 55
     t.Parent = f
 
@@ -2491,10 +2975,10 @@ local function makeCoordInput(label)
 end
 
 boxX = makeCoordInput("X:")
-boxX.Text = "0"
 boxY = makeCoordInput("Y:")
-boxY.Text = "50"
 boxZ = makeCoordInput("Z:")
+boxX.Text = "0"
+boxY.Text = "50"
 boxZ.Text = "0"
 
 createButton(tpCoordsSec, "Телепорт по координатам", NL_BLUE, function()
@@ -2534,7 +3018,9 @@ createButton(tpCoordsSec, "Вниз на 100", NL_DARKER, function()
     end
 end)
 
---========== SAVE POSITION ==========
+--=========================================================
+-- SAVE POSITION
+--=========================================================
 tpSaveSec = createSection(tpRight, "Сохранение позиции")
 
 savedPos = nil
@@ -2555,8 +3041,10 @@ createButton(tpSaveSec, "Сохранить позицию", NL_BLUE, function()
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if hrp then
         savedPos = hrp.CFrame
-        savedLabel.Text = string.format("Сохранено: (%.0f, %.0f, %.0f)",
-            hrp.Position.X, hrp.Position.Y, hrp.Position.Z)
+        savedLabel.Text = string.format(
+            "Сохранено: (%.0f, %.0f, %.0f)",
+            hrp.Position.X, hrp.Position.Y, hrp.Position.Z
+        )
         savedLabel.TextColor3 = NL_GREEN
     end
 end)
@@ -2576,33 +3064,70 @@ createButton(tpSaveSec, "Вернуться в сохранённое", NL_GREEN
     end
 end)
 
---========== UNLOAD ==========
+--=========================================================
+-- UNLOAD
+--=========================================================
 _G.NL_UnloadTP = function()
     for _, e in pairs(tpEntries) do
         if e and e.Parent then e:Destroy() end
     end
     tpEntries = {}
+    if tpHpConn then
+        tpHpConn:Disconnect()
+        tpHpConn = nil
+    end
 end
 
-print("[NL] 4/12 — Teleport загружен")
+print("[NL] 4/13 — Teleport загружен (FIX v3)")
 --=========================================================
--- NEVERLOSE UI — 5/12
+-- NEVERLOSE UI — 5/13 (FIX v3)
 -- Вкладка Cursor TP: телепорт к курсору
+-- ФИКСЫ:
+--   • Убран лишний GetMouse() каждый кадр (кеш мыши)
+--   • Hazard-check по имени, не по цвету (быстрее)
+--   • Debounce на кнопку ТП (нельзя спамить)
+--   • RaycastParams кэшируется и инвалидируется при смене espFolder
+--   • Обработка случая, когда курсор смотрит в небо
+--   • Unload реально чистит (не только UI)
+--   • Cooldown защита от "телепорт в стену и застревание"
 --=========================================================
-ctpContent = makeTabContent("Cursor TP")
-ctpLeft  = createColumn(ctpContent); ctpLeft.Position  = UDim2.new(0, 0, 0, 0)
-ctpRight = createColumn(ctpContent); ctpRight.Position = UDim2.new(0.5, 8, 0, 0)
 
---========== STATE ==========
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 5: база не загружена")
+    return
+end
+
+ctpContent = makeTabContent("Cursor TP")
+if not ctpContent then
+    warn("[NL] Часть 5: не удалось создать вкладку Cursor TP")
+    return
+end
+
+ctpLeft  = createColumn(ctpContent, "left")
+ctpRight = createColumn(ctpContent, "right")
+
+--=========================================================
+-- STATE
+--=========================================================
 ctpSettings = {
     heightOffset   = 3,
     maxDistance    = 500,
     useRaycast     = true,
     blockIfHazard  = false,
-    hazardKeywords = {"kill", "lava", "damage", "death", "spike", "hazard", "void"},
+    cooldown       = 0.15,
+    hazardKeywords = {
+        "kill", "lava", "damage", "death", "spike",
+        "hazard", "void", "fire", "trap",
+    },
 }
 
---========== HAZARD CHECK ==========
+ctpLastTP = 0
+ctpCachedRayParams = nil
+ctpCachedEspFolder = nil
+
+--=========================================================
+-- HAZARD CHECK
+--=========================================================
 function ctpIsHazard(part)
     if not part or not ctpSettings.blockIfHazard then return false end
     local n = string.lower(part.Name or "")
@@ -2612,35 +3137,71 @@ function ctpIsHazard(part)
     return false
 end
 
---========== GET POSITION UNDER CURSOR ==========
+--=========================================================
+-- RAYCAST PARAMS (кеш)
+--=========================================================
+function ctpGetRayParams()
+    if ctpCachedRayParams
+        and ctpCachedEspFolder == espFolder
+        and ctpCachedEspFolder ~= nil then
+        return ctpCachedRayParams
+    end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+
+    local list = {}
+    if LP.Character then table.insert(list, LP.Character) end
+    if espFolder and espFolder.Parent then table.insert(list, espFolder) end
+
+    params.FilterDescendantsInstances = list
+
+    ctpCachedRayParams = params
+    ctpCachedEspFolder = espFolder
+    return params
+end
+
+--=========================================================
+-- GET POSITION UNDER CURSOR
+--=========================================================
 function getCursorWorldPos()
     local cam = workspace.CurrentCamera
     if not cam then return nil end
-    local mouse = LP:GetMouse()
+
+    -- ✅ Кешируем Mouse — не создаём каждый вызов
+    local mouse = Mouse or LP:GetMouse()
     if not mouse then return nil end
 
     local ray = cam:ScreenPointToRay(mouse.X, mouse.Y)
 
     if ctpSettings.useRaycast then
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        local filterList = {}
-        if LP.Character then table.insert(filterList, LP.Character) end
-        if espFolder then table.insert(filterList, espFolder) end
-        params.FilterDescendantsInstances = filterList
-
-        local result = workspace:Raycast(ray.Origin, ray.Direction * ctpSettings.maxDistance, params)
+        local result = workspace:Raycast(
+            ray.Origin,
+            ray.Direction * ctpSettings.maxDistance,
+            ctpGetRayParams()
+        )
         if result then
             if ctpIsHazard(result.Instance) then return nil end
             return result.Position, result.Instance
         end
+        -- Не попали ни во что — не ТП-аем
+        return nil, nil
     end
 
+    -- Без raycast — точка на луче в макс. дистанции
     return ray.Origin + ray.Direction * ctpSettings.maxDistance, nil
 end
 
---========== TELEPORT TO CURSOR ==========
+--=========================================================
+-- TELEPORT TO CURSOR
+--=========================================================
 function tpToCursor()
+    if not _G.NeverloseUILoaded then return end
+
+    local now = tick()
+    if now - ctpLastTP < ctpSettings.cooldown then return end
+    ctpLastTP = now
+
     local char = LP.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -2661,7 +3222,9 @@ end
 
 _G.NL_TPToCursor = tpToCursor
 
---========== UI: MAIN ==========
+--=========================================================
+-- UI: MAIN
+--=========================================================
 ctpMainSec = createSection(ctpLeft, "Управление")
 
 ctpContainer = Instance.new("Frame")
@@ -2678,6 +3241,7 @@ ctpBtn.Text = "Телепорт к курсору"
 ctpBtn.TextColor3 = NL_WHITE
 ctpBtn.Font = Enum.Font.GothamBold
 ctpBtn.TextSize = 12
+ctpBtn.AutoButtonColor = false
 ctpBtn.ZIndex = 55
 ctpBtn.Parent = ctpContainer
 registerAccent(ctpBtn, "BackgroundColor3")
@@ -2687,6 +3251,12 @@ ctpc.CornerRadius = UDim.new(0, 5)
 ctpc.Parent = ctpBtn
 
 ctpBtn.MouseButton1Click:Connect(tpToCursor)
+ctpBtn.MouseEnter:Connect(function()
+    tween(ctpBtn, 0.15, {BackgroundTransparency = 0.2})
+end)
+ctpBtn.MouseLeave:Connect(function()
+    tween(ctpBtn, 0.15, {BackgroundTransparency = 0})
+end)
 
 ctpBindBtn = Instance.new("TextButton")
 ctpBindBtn.Size = UDim2.new(0, 46, 0, 22)
@@ -2697,6 +3267,7 @@ ctpBindBtn.Text = "[None]"
 ctpBindBtn.TextColor3 = NL_DIM
 ctpBindBtn.Font = Enum.Font.Gotham
 ctpBindBtn.TextSize = 10
+ctpBindBtn.AutoButtonColor = false
 ctpBindBtn.ZIndex = 56
 ctpBindBtn.Parent = ctpContainer
 
@@ -2717,7 +3288,9 @@ ctpBindBtn.MouseButton1Click:Connect(function()
     startListeningForBind(ctpBindBtn, "CTP_Teleport", "Нажми клавишу для ТП к курсору")
 end)
 
---========== SETTINGS ==========
+--=========================================================
+-- SETTINGS
+--=========================================================
 ctpSetSec = createSection(ctpLeft, "Настройки")
 
 createSlider(ctpSetSec, "Высота над полом", 0, 20, 3, function(v)
@@ -2728,6 +3301,10 @@ createSlider(ctpSetSec, "Макс. дистанция", 50, 2000, 500, function(
     ctpSettings.maxDistance = v
 end)
 
+createSlider(ctpSetSec, "Cooldown x100", 5, 100, 15, function(v)
+    ctpSettings.cooldown = v / 100
+end)
+
 createCheckbox(ctpSetSec, "Raycast (к поверхности)", true, function(v)
     ctpSettings.useRaycast = v
 end, "CTP_Raycast")
@@ -2736,7 +3313,9 @@ createCheckbox(ctpSetSec, "Блокировать опасные блоки", fa
     ctpSettings.blockIfHazard = v
 end, "CTP_BlockHazard")
 
---========== QUICK ACTIONS ==========
+--=========================================================
+-- QUICK ACTIONS
+--=========================================================
 ctpQuickSec = createSection(ctpRight, "Быстрые действия")
 
 createButton(ctpQuickSec, "ТП к курсору", NL_BLUE, tpToCursor)
@@ -2781,13 +3360,15 @@ createButton(ctpQuickSec, "ТП вниз на 50", NL_DARKER, function()
     end
 end)
 
---========== INFO ==========
+--=========================================================
+-- INFO
+--=========================================================
 ctpInfoSec = createSection(ctpRight, "Информация")
 
 ctpInfoLabel = Instance.new("TextLabel")
-ctpInfoLabel.Size = UDim2.new(1, 0, 0, 100)
+ctpInfoLabel.Size = UDim2.new(1, 0, 0, 110)
 ctpInfoLabel.BackgroundTransparency = 1
-ctpInfoLabel.Text = "1. Наведи курсор на точку\n2. Нажми бинд (или кнопку)\n3. Телепортируешься туда\n\nRaycast ON — ТП к поверхности\nRaycast OFF — ТП в точку на луче"
+ctpInfoLabel.Text = "1. Наведи курсор на точку\n2. Нажми бинд (или кнопку)\n3. Телепортируешься туда\n\nRaycast ON — ТП к поверхности\nRaycast OFF — ТП в точку на луче\n\nCooldown защищает от спама."
 ctpInfoLabel.TextColor3 = NL_DIM
 ctpInfoLabel.Font = Enum.Font.Gotham
 ctpInfoLabel.TextSize = 11
@@ -2797,23 +3378,52 @@ ctpInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
 ctpInfoLabel.ZIndex = 55
 ctpInfoLabel.Parent = ctpInfoSec
 
---========== UNLOAD ==========
+--=========================================================
+-- UNLOAD
+--=========================================================
 _G.NL_UnloadCTP = function()
+    ctpCachedRayParams = nil
+    ctpCachedEspFolder = nil
+
+    if BindCallbacks["CTP_Teleport"] then
+        BindCallbacks["CTP_Teleport"] = nil
+    end
     if ctpContent and ctpContent.Parent then
         ctpContent:Destroy()
     end
 end
 
-print("[NL] 5/12 — Cursor TP загружен")
+print("[NL] 5/13 — Cursor TP загружен (FIX v3)")
 --=========================================================
--- NEVERLOSE UI — 6/12
+-- NEVERLOSE UI — 6/13 (FIX v3)
 -- Вкладка Baritone: AI-навигация с паркуром и hazard-детектом
+-- ФИКСЫ:
+--   • SPEED GUARD: JumpPower/WalkSpeed не перебиваются вне Baritone
+--   • Убран дубль task.wait(0.05) при lack of repath
+--   • btMemory очистка по времени корректная
+--   • Правильный фильтр для espFolder после пересоздания
+--   • Unload корректный (btStop + все connections)
+--   • btSpeedConn не воюет со SpeedSystem.Matrix
+--   • pcall на всех Raycast (workspace может быть занят)
 --=========================================================
-btContent = makeTabContent("Baritone")
-btLeft  = createColumn(btContent); btLeft.Position  = UDim2.new(0, 0, 0, 0)
-btRight = createColumn(btContent); btRight.Position = UDim2.new(0.5, 8, 0, 0)
 
---========== STATE ==========
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 6: база не загружена")
+    return
+end
+
+btContent = makeTabContent("Baritone")
+if not btContent then
+    warn("[NL] Часть 6: не удалось создать вкладку Baritone")
+    return
+end
+
+btLeft  = createColumn(btContent, "left")
+btRight = createColumn(btContent, "right")
+
+--=========================================================
+-- STATE
+--=========================================================
 btS = {
     speed = 28, slowSpeed = 14, fastSpeed = 36, jumpPower = 70,
     target = nil, running = false, showPath = true, autoJump = true, avoidKill = true,
@@ -2829,9 +3439,13 @@ btS = {
     debug = false,
 }
 
-function btLog(...) if btS.debug then print("[Baritone]", ...) end end
+function btLog(...)
+    if btS.debug then print("[Baritone]", ...) end
+end
 
---========== RUNTIME ==========
+--=========================================================
+-- RUNTIME
+--=========================================================
 btLastRepath = 0
 btLastPos = nil
 btLastMoveTime = tick()
@@ -2846,8 +3460,11 @@ btMemory = {hazards = {}, fails = {}}
 btMarker = nil
 btMemFolder = nil
 btTracerFolder = nil
+btMoveLoopRunning = false
 
---========== CREATE WORKSPACE OBJECTS ==========
+--=========================================================
+-- CREATE WORKSPACE OBJECTS
+--=========================================================
 function btCreateWorkspaceObjects()
     if btMarker and btMarker.Parent then return end
 
@@ -2873,7 +3490,9 @@ function btCreateWorkspaceObjects()
     btTracerFolder.Parent = workspace
 end
 
---========== VISUALS ==========
+--=========================================================
+-- VISUALS
+--=========================================================
 function btDrawMemory()
     if not btMemFolder or not btMemFolder.Parent then return end
     for _, c in ipairs(btMemFolder:GetChildren()) do c:Destroy() end
@@ -2916,7 +3535,9 @@ end
 
 function btDrawPath(wps)
     btClearTracer()
-    if not btS.showPath or not wps or not btTracerFolder or not btTracerFolder.Parent then return end
+    if not btS.showPath or not wps or not btTracerFolder or not btTracerFolder.Parent then
+        return
+    end
 
     for i = 1, #wps - 1 do
         local a, b = wps[i], wps[i + 1]
@@ -2928,7 +3549,9 @@ function btDrawPath(wps)
             p.CanQuery = false
             p.CanTouch = false
             p.Material = Enum.Material.SmoothPlastic
-            p.Color = (i == #wps - 1) and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(0, 170, 255)
+            p.Color = (i == #wps - 1)
+                and Color3.fromRGB(0, 255, 120)
+                or  Color3.fromRGB(0, 170, 255)
             p.Transparency = 0.45
             p.Size = Vector3.new(0.3, 0.3, d)
             p.CFrame = CFrame.new(a.Position, b.Position) * CFrame.new(0, 0, -d / 2)
@@ -2937,7 +3560,9 @@ function btDrawPath(wps)
     end
 end
 
---========== RAYCAST ==========
+--=========================================================
+-- RAYCAST
+--=========================================================
 function btNewRayParams()
     local p = RaycastParams.new()
     p.FilterType = Enum.RaycastFilterType.Exclude
@@ -2954,19 +3579,23 @@ end
 function btGetMousePos()
     local cam = workspace.CurrentCamera
     if not cam then return Vector3.new(0, 50, 0) end
-    local mouse = LP:GetMouse()
+    local mouse = Mouse or LP:GetMouse()
     if not mouse then return Vector3.new(0, 50, 0) end
     local ray = cam:ScreenPointToRay(mouse.X, mouse.Y)
-    local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, btNewRayParams())
-    if hit then return hit.Position end
+    local ok, hit = pcall(function()
+        return workspace:Raycast(ray.Origin, ray.Direction * 1000, btNewRayParams())
+    end)
+    if ok and hit then return hit.Position end
     return ray.Origin + ray.Direction * 500
 end
 
---========== HAZARD ==========
+--=========================================================
+-- HAZARD
+--=========================================================
 btKillKeywords = {
     "kill", "lava", "damage", "death", "spike",
     "hazard", "fire", "poison", "trap", "insta",
-    "void", "burn", "dead"
+    "void", "burn", "dead",
 }
 
 function btIsHazard(part)
@@ -3002,16 +3631,20 @@ end
 
 function btGroundBelow(pos, depth)
     depth = depth or 5
-    local res = workspace:Raycast(
-        pos + Vector3.new(0, 2, 0),
-        Vector3.new(0, -depth, 0),
-        btNewRayParams()
-    )
-    if not res then return nil, nil, false end
+    local ok, res = pcall(function()
+        return workspace:Raycast(
+            pos + Vector3.new(0, 2, 0),
+            Vector3.new(0, -depth, 0),
+            btNewRayParams()
+        )
+    end)
+    if not ok or not res then return nil, nil, false end
     return res.Position, res.Instance, btIsHazard(res.Instance)
 end
 
---========== MEMORY ==========
+--=========================================================
+-- MEMORY
+--=========================================================
 function btMemAdd(list, pos)
     table.insert(list, {pos = pos, t = tick()})
     local now = tick()
@@ -3030,7 +3663,9 @@ function btMemNear(list, pos, radius)
     return false
 end
 
---========== SIMULATE JUMP ==========
+--=========================================================
+-- SIMULATE JUMP
+--=========================================================
 function btSimulateJump(fromPos, dir, jp, sp)
     local g = workspace.Gravity
     if g <= 0 then g = 196.2 end
@@ -3053,7 +3688,9 @@ function btSimulateJump(fromPos, dir, jp, sp)
     return false, pos, "no_land"
 end
 
---========== DETECT ==========
+--=========================================================
+-- DETECT
+--=========================================================
 function btPlatformWidth(hrp, dir)
     local side = dir:Cross(Vector3.new(0, 1, 0)).Unit
     local leftW, rightW = 0, 0
@@ -3075,19 +3712,23 @@ function btFanScanHazard(hrp, dir)
     for _, a in ipairs(angles) do
         local d = (CFrame.Angles(0, a, 0) * dir).Unit
 
-        local res1 = workspace:Raycast(
-            hrp.Position - Vector3.new(0, 2, 0),
-            d * btS.scanDist,
-            btNewRayParams()
-        )
-        if res1 and btIsHazard(res1.Instance) then return true, d end
+        local ok1, res1 = pcall(function()
+            return workspace:Raycast(
+                hrp.Position - Vector3.new(0, 2, 0),
+                d * btS.scanDist,
+                btNewRayParams()
+            )
+        end)
+        if ok1 and res1 and btIsHazard(res1.Instance) then return true, d end
 
-        local res2 = workspace:Raycast(
-            hrp.Position + Vector3.new(0, 1, 0),
-            d * btS.scanDist,
-            btNewRayParams()
-        )
-        if res2 and btIsHazard(res2.Instance) then return true, d end
+        local ok2, res2 = pcall(function()
+            return workspace:Raycast(
+                hrp.Position + Vector3.new(0, 1, 0),
+                d * btS.scanDist,
+                btNewRayParams()
+            )
+        end)
+        if ok2 and res2 and btIsHazard(res2.Instance) then return true, d end
     end
     return false, nil
 end
@@ -3112,15 +3753,19 @@ end
 function btDetectWall(hrp, dir)
     if not btS.wallCheck then return nil end
     local origin = hrp.Position + Vector3.new(0, 1, 0)
-    local res = workspace:Raycast(origin, dir * 5, btNewRayParams())
-    if res and res.Instance then
+    local ok, res = pcall(function()
+        return workspace:Raycast(origin, dir * 5, btNewRayParams())
+    end)
+    if ok and res and res.Instance then
         local top = res.Instance.Position.Y + res.Instance.Size.Y / 2
         if top > hrp.Position.Y + 3 then return res.Instance end
     end
     return nil
 end
 
---========== BOOST ==========
+--=========================================================
+-- BOOST
+--=========================================================
 function btBoost(hrp, dir, speed, duration)
     local bv = Instance.new("BodyVelocity")
     bv.Name = "NL_Boost"
@@ -3165,7 +3810,9 @@ function btSmartJump(hrp, hum, dir, jp)
     end)
 end
 
---========== WORLD MONITOR ==========
+--=========================================================
+-- WORLD MONITOR
+--=========================================================
 btWorldConn = workspace.DescendantAdded:Connect(function(obj)
     if not _G.NeverloseUILoaded then return end
     if not btS.running or not btS.adaptivePath then return end
@@ -3179,7 +3826,9 @@ btWorldConn = workspace.DescendantAdded:Connect(function(obj)
     end
 end)
 
---========== BRAIN ==========
+--=========================================================
+-- BRAIN (hazard/parkour/wall при движении)
+--=========================================================
 btBrainConn = RunService.Heartbeat:Connect(function()
     if not _G.NeverloseUILoaded then return end
     if not btS.running then return end
@@ -3191,7 +3840,8 @@ btBrainConn = RunService.Heartbeat:Connect(function()
     if not hrp or not hum then return end
 
     local state = hum:GetState()
-    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
+    if state == Enum.HumanoidStateType.Freefall
+        or state == Enum.HumanoidStateType.Jumping then
         btJumping = true
         return
     end
@@ -3216,8 +3866,10 @@ btBrainConn = RunService.Heartbeat:Connect(function()
             local startD, endD = nil, nil
             for d = 1, btS.scanDist, 1 do
                 local origin = hrp.Position + hazDir * d - Vector3.new(0, 2, 0)
-                local res = workspace:Raycast(origin, Vector3.new(0, -3, 0), btNewRayParams())
-                local h = res and btIsHazard(res.Instance)
+                local ok, res = pcall(function()
+                    return workspace:Raycast(origin, Vector3.new(0, -3, 0), btNewRayParams())
+                end)
+                local h = ok and res and btIsHazard(res.Instance)
                 if h and not startD then startD = d end
                 if h then endD = d end
                 if startD and not h and d > startD + 1 then break end
@@ -3282,14 +3934,19 @@ btBrainConn = RunService.Heartbeat:Connect(function()
     end
 end)
 
---========== PATHFINDING ==========
+--=========================================================
+-- PATHFINDING
+--=========================================================
 function btBuildPath(fromPos, targetPos)
-    local path = Pathfinding:CreatePath({
-        AgentRadius = 2,
-        AgentHeight = 5,
-        AgentCanJump = btS.autoJump or btS.parkourMode,
-        WaypointSpacing = btS.wpSpacing,
-    })
+    local ok, path = pcall(function()
+        return Pathfinding:CreatePath({
+            AgentRadius = 2,
+            AgentHeight = 5,
+            AgentCanJump = btS.autoJump or btS.parkourMode,
+            WaypointSpacing = btS.wpSpacing,
+        })
+    end)
+    if not ok or not path then return nil, nil end
 
     local okc = pcall(function() path:ComputeAsync(fromPos, targetPos) end)
     if okc and path.Status == Enum.PathStatus.Success then
@@ -3316,12 +3973,14 @@ function btWpsBlocked(wps)
         local dir = (b.Position - a.Position)
         local dist = dir.Magnitude
         if dist > 0.5 then
-            local res = workspace:Raycast(
-                a.Position + Vector3.new(0, 1, 0),
-                dir.Unit * dist,
-                btNewRayParams()
-            )
-            if res and res.Instance and not btIsHazard(res.Instance) then
+            local ok, res = pcall(function()
+                return workspace:Raycast(
+                    a.Position + Vector3.new(0, 1, 0),
+                    dir.Unit * dist,
+                    btNewRayParams()
+                )
+            end)
+            if ok and res and res.Instance and not btIsHazard(res.Instance) then
                 local top = res.Instance.Position.Y + res.Instance.Size.Y / 2
                 if top > a.Position.Y + 3 then return true end
             end
@@ -3346,9 +4005,14 @@ function btDoSidestep(hrp, hum)
     return false
 end
 
---========== MOVEMENT LOOP ==========
+--=========================================================
+-- MOVEMENT LOOP
+--=========================================================
 function btMovementLoop()
+    if btMoveLoopRunning then return end
+    btMoveLoopRunning = true
     btLog("Цикл движения запущен")
+
     while _G.NeverloseUILoaded and btS.running do
         local char = LP.Character
         if not char or not char.Parent then
@@ -3364,6 +4028,7 @@ function btMovementLoop()
             elseif not btS.target then
                 task.wait(0.2)
             else
+                -- Проверяем, не стоим ли на hazard
                 if tick() % 3 < 0.06 then
                     local _, hit, haz = btGroundBelow(hrp.Position, 6)
                     if hit and not haz then
@@ -3371,10 +4036,12 @@ function btMovementLoop()
                     end
                 end
 
+                -- Дошли до цели?
                 if (hrp.Position - btS.target).Magnitude < 4 then
                     break
                 end
 
+                -- Адаптивная скорость
                 if btS.adaptiveSpeed then
                     local dir = hum.MoveDirection
                     if dir.Magnitude > 0.1 then
@@ -3388,6 +4055,7 @@ function btMovementLoop()
                     end
                 end
 
+                -- Anti-stuck
                 local moving = hrp.AssemblyLinearVelocity.Magnitude > 2
                     or (btLastPos and (hrp.Position - btLastPos).Magnitude > 0.5)
 
@@ -3419,6 +4087,7 @@ function btMovementLoop()
                     end
                 end
 
+                -- Repath?
                 local needRepath = false
                 if not btCurrentWps or btCurrentIdx > #btCurrentWps then
                     needRepath = true
@@ -3438,12 +4107,16 @@ function btMovementLoop()
                         btCurrentWps, btCurrentIdx = wps, 1
                         btDrawPath(wps)
                     else
-                        btCurrentWps = {{Position = btS.target, Action = Enum.PathWaypointAction.Walk}}
+                        btCurrentWps = {{
+                            Position = btS.target,
+                            Action = Enum.PathWaypointAction.Walk,
+                        }}
                         btCurrentIdx = 1
                         btDrawPath(btCurrentWps)
                     end
                 end
 
+                -- Идём по waypoints
                 if btCurrentWps and btCurrentIdx <= #btCurrentWps then
                     while btCurrentIdx < #btCurrentWps do
                         local dCur = (hrp.Position - btCurrentWps[btCurrentIdx].Position).Magnitude
@@ -3478,11 +4151,14 @@ function btMovementLoop()
     end
 
     btS.running = false
+    btMoveLoopRunning = false
     if btMarker then btMarker.Transparency = 0.4 end
     btClearTracer()
 end
 
---========== CONTROL ==========
+--=========================================================
+-- CONTROL
+--=========================================================
 function btPlacePoint()
     btCreateWorkspaceObjects()
     local pos = btGetMousePos()
@@ -3547,13 +4223,22 @@ function btClearMemory()
     if _G.NL_Notify then _G.NL_Notify("Память очищена", NL_GREEN, 2) end
 end
 
---========== SPEED GUARD ==========
+--=========================================================
+-- SPEED GUARD (не воюет со SpeedSystem)
+--=========================================================
 btSpeedConn = RunService.Heartbeat:Connect(function()
     if not _G.NeverloseUILoaded then return end
+    if not btS.running then return end
+
+    -- ✅ Не трогаем WalkSpeed если SpeedSystem в Matrix — он сам управляет
+    if SpeedSystem and SpeedSystem.Enabled and SpeedSystem.Mode == "Matrix" then
+        return
+    end
+
     local char = LP.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if hum then
-        if not btS.adaptiveSpeed and btS.running and hum.WalkSpeed ~= btS.speed then
+        if not btS.adaptiveSpeed and hum.WalkSpeed ~= btS.speed then
             hum.WalkSpeed = btS.speed
         end
         if not btLockJumpPower and hum.UseJumpPower and hum.JumpPower ~= btS.jumpPower then
@@ -3562,7 +4247,9 @@ btSpeedConn = RunService.Heartbeat:Connect(function()
     end
 end)
 
---========== BINDABLE BUTTON HELPER ==========
+--=========================================================
+-- BINDABLE BUTTON HELPER
+--=========================================================
 function btMakeBindableButton(parent, label, callback, color, bindAction)
     local container = Instance.new("Frame")
     container.Size = UDim2.new(1, 0, 0, 32)
@@ -3578,6 +4265,7 @@ function btMakeBindableButton(parent, label, callback, color, bindAction)
     btn.TextColor3 = NL_WHITE
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 12
+    btn.AutoButtonColor = false
     btn.ZIndex = 55
     btn.Parent = container
 
@@ -3598,6 +4286,7 @@ function btMakeBindableButton(parent, label, callback, color, bindAction)
     bb.TextColor3 = NL_DIM
     bb.Font = Enum.Font.Gotham
     bb.TextSize = 10
+    bb.AutoButtonColor = false
     bb.ZIndex = 56
     bb.Parent = container
 
@@ -3619,7 +4308,9 @@ function btMakeBindableButton(parent, label, callback, color, bindAction)
     end)
 end
 
---========== UI: MAIN ==========
+--=========================================================
+-- UI: MAIN
+--=========================================================
 btSecMain = createSection(btLeft, "Управление")
 
 createCheckbox(btSecMain, "Показывать путь", true, function(v)
@@ -3649,27 +4340,51 @@ end)
 --========== BOOST ==========
 btSecBoost = createSection(btLeft, "Boost")
 createCheckbox(btSecBoost, "Включить Boost", true, function(v) btS.flightBoost = v end, "BT_Boost")
-createSlider(btSecBoost, "Длительность x100", 5, 50, 20, function(v) btS.boostDuration = v / 100 end)
+createSlider(btSecBoost, "Длительность x100", 5, 50, 20, function(v)
+    btS.boostDuration = v / 100
+end)
 
 --========== HAZARD ==========
 btSecHaz = createSection(btLeft, "Hazard")
-createCheckbox(btSecHaz, "Избегать kill-блоков", true, function(v) btS.avoidKill = v end, "BT_AvoidKill")
+createCheckbox(btSecHaz, "Избегать kill-блоков", true, function(v)
+    btS.avoidKill = v
+end, "BT_AvoidKill")
 
 createSlider(btSecHaz, "Hazard R", 0, 255, 255, function(v)
-    btS.hazardColor = Color3.fromRGB(v, math.floor(btS.hazardColor.G * 255), math.floor(btS.hazardColor.B * 255))
+    btS.hazardColor = Color3.fromRGB(
+        v,
+        math.floor(btS.hazardColor.G * 255),
+        math.floor(btS.hazardColor.B * 255)
+    )
 end, true, "R")
 
 createSlider(btSecHaz, "Hazard G", 0, 255, 0, function(v)
-    btS.hazardColor = Color3.fromRGB(math.floor(btS.hazardColor.R * 255), v, math.floor(btS.hazardColor.B * 255))
+    btS.hazardColor = Color3.fromRGB(
+        math.floor(btS.hazardColor.R * 255),
+        v,
+        math.floor(btS.hazardColor.B * 255)
+    )
 end, true, "G")
 
 createSlider(btSecHaz, "Hazard B", 0, 255, 0, function(v)
-    btS.hazardColor = Color3.fromRGB(math.floor(btS.hazardColor.R * 255), math.floor(btS.hazardColor.G * 255), v)
+    btS.hazardColor = Color3.fromRGB(
+        math.floor(btS.hazardColor.R * 255),
+        math.floor(btS.hazardColor.G * 255),
+        v
+    )
 end, true, "B")
 
-createSlider(btSecHaz, "Допуск цвета x100", 1, 30, 12, function(v) btS.colorTol = v / 100 end)
-createSlider(btSecHaz, "Скан вперёд", 10, 50, 30, function(v) btS.scanDist = v end)
-createSlider(btSecHaz, "Макс. сила прыжка", 50, 400, 350, function(v) btS.maxJumpPower = v end)
+createSlider(btSecHaz, "Допуск цвета x100", 1, 30, 12, function(v)
+    btS.colorTol = v / 100
+end)
+
+createSlider(btSecHaz, "Скан вперёд", 10, 50, 30, function(v)
+    btS.scanDist = v
+end)
+
+createSlider(btSecHaz, "Макс. сила прыжка", 50, 400, 350, function(v)
+    btS.maxJumpPower = v
+end)
 
 --========== PARKOUR ==========
 btSecPark = createSection(btRight, "Паркур")
@@ -3706,45 +4421,105 @@ btMakeBindableButton(btSecActions, "Стоп", btStop, NL_RED, "BT_Stop")
 btMakeBindableButton(btSecActions, "Сбросить всё", btReset, NL_DIM, "BT_Reset")
 btMakeBindableButton(btSecActions, "Очистить память", btClearMemory, NL_DIM, "BT_MemClear")
 
---========== UNLOAD ==========
+--=========================================================
+-- UNLOAD
+--=========================================================
 _G.NL_UnloadBT = function()
-    btStop()
-    if btBrainConn then btBrainConn:Disconnect() end
-    if btSpeedConn then btSpeedConn:Disconnect() end
-    if btWorldConn then btWorldConn:Disconnect() end
+    btS.running = false
+
+    if btBrainConn then
+        btBrainConn:Disconnect()
+        btBrainConn = nil
+    end
+    if btSpeedConn then
+        btSpeedConn:Disconnect()
+        btSpeedConn = nil
+    end
+    if btWorldConn then
+        btWorldConn:Disconnect()
+        btWorldConn = nil
+    end
+
     if btMarker and btMarker.Parent then btMarker:Destroy() end
     if btMemFolder and btMemFolder.Parent then btMemFolder:Destroy() end
     if btTracerFolder and btTracerFolder.Parent then btTracerFolder:Destroy() end
+    btMarker, btMemFolder, btTracerFolder = nil, nil, nil
+
+    for _, act in ipairs({"BT_Point", "BT_Start", "BT_Stop", "BT_Reset", "BT_MemClear"}) do
+        BindCallbacks[act] = nil
+    end
+
+    if btContent and btContent.Parent then
+        btContent:Destroy()
+    end
 end
 
-print("[NL] 6/12 — Baritone загружен")
+print("[NL] 6/13 — Baritone загружен (FIX v3)")
 --=========================================================
--- NEVERLOSE UI — 7/12
+-- NEVERLOSE UI — 7/13 (FIX v3)
 -- Экран загрузки с прогресс-баром + защита от зависания
+-- ФИКСЫ:
+--   • Корректный таймаут (проверка на unload, не крашится)
+--   • Уборка bgBlur при unload
+--   • Плавный финальный ресайз (без нулевой точки)
+--   • Проверка на destroy перед каждым твином
+--   • LoadingFrame сохраняется в _G для unload
+--   • Работает на маленьких экранах (responsive)
+--   • safeTween — обёртка, не падает если объект удалён
 --=========================================================
 
--- Скрываем меню и водяной знак на время загрузки
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 7: база не загружена")
+    return
+end
+
+--=========================================================
+-- СКРЫТЬ МЕНЮ И ВОДЯНОЙ ЗНАК НА ВРЕМЯ ЗАГРУЗКИ
+--=========================================================
 if MainFrame then MainFrame.Visible = false end
 if WM then WM.Visible = false end
 
--- ✅ Таймаут: если лоадер жив 20 сек — принудительно закрываем
+--=========================================================
+-- ФЛАГИ
+--=========================================================
+_G.NL_LoadingActive = true
+_G.NL_LoadingFrame = nil
+_G.NL_LoadingBlur = nil
+
+--=========================================================
+-- ТАЙМАУТ (20 сек)
+--=========================================================
 task.delay(20, function()
-    if LoadingFrame and LoadingFrame.Parent then
-        warn("[NL] Loader timeout — принудительное закрытие")
-        pcall(function() LoadingFrame:Destroy() end)
-        if bgBlur and bgBlur.Parent then
-            pcall(function() bgBlur:Destroy() end)
+    if not _G.NL_LoadingActive then return end
+    if not _G.NeverloseUILoaded then return end
+    warn("[NL] Loader timeout — принудительное закрытие")
+
+    _G.NL_LoadingActive = false
+
+    pcall(function()
+        if _G.NL_LoadingFrame and _G.NL_LoadingFrame.Parent then
+            _G.NL_LoadingFrame:Destroy()
         end
-        if WM then WM.Visible = true end
-        if MainFrame then
-            MainFrame.Visible = true
-            local sz = getMenuSize()
-            MainFrame.Size = UDim2.new(0, sz.w, 0, sz.h)
-            MainFrame.Position = UDim2.new(0.5, -sz.w / 2, 0.5, -sz.h / 2)
+    end)
+    pcall(function()
+        if _G.NL_LoadingBlur and _G.NL_LoadingBlur.Parent then
+            _G.NL_LoadingBlur:Destroy()
         end
+    end)
+
+    if WM then WM.Visible = true end
+
+    if MainFrame and MainFrame.Parent then
+        MainFrame.Visible = true
+        local sz = getMenuSize()
+        MainFrame.Size = UDim2.new(0, sz.w, 0, sz.h)
+        MainFrame.Position = UDim2.new(0.5, -sz.w / 2, 0.5, -sz.h / 2)
     end
 end)
 
+--=========================================================
+-- LOADING FRAME
+--=========================================================
 LoadingFrame = Instance.new("Frame")
 LoadingFrame.Name = "NL_Loading"
 LoadingFrame.Size = UDim2.new(1, 0, 1, 0)
@@ -3752,12 +4527,27 @@ LoadingFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
 LoadingFrame.BorderSizePixel = 0
 LoadingFrame.ZIndex = 500
 LoadingFrame.Parent = ScreenGui
+_G.NL_LoadingFrame = LoadingFrame
 
+--=========================================================
+-- BLUR
+--=========================================================
 bgBlur = Instance.new("BlurEffect")
 bgBlur.Size = 0
 bgBlur.Parent = Lighting
+_G.NL_LoadingBlur = bgBlur
 
---========== LOGO ==========
+--=========================================================
+-- RESPONSIVE LAYOUT
+--=========================================================
+local vp = (Cam and Cam.ViewportSize) or Vector2.new(1920, 1080)
+local isSmall = vp.X < 900
+local logoSize = isSmall and 80 or 110
+local barWidth = math.min(400, vp.X - 60)
+
+--=========================================================
+-- LOGO
+--=========================================================
 BigLogo = Instance.new("TextLabel")
 BigLogo.Size = UDim2.new(0, 400, 0, 150)
 BigLogo.Position = UDim2.new(0.5, -200, 0.5, -140)
@@ -3765,7 +4555,7 @@ BigLogo.BackgroundTransparency = 1
 BigLogo.Text = "NL"
 BigLogo.TextColor3 = NL_BLUE
 BigLogo.Font = Enum.Font.GothamBlack
-BigLogo.TextSize = 110
+BigLogo.TextSize = logoSize
 BigLogo.TextTransparency = 1
 BigLogo.ZIndex = 501
 BigLogo.Parent = LoadingFrame
@@ -3783,10 +4573,12 @@ BrandLabel.TextTransparency = 1
 BrandLabel.ZIndex = 501
 BrandLabel.Parent = LoadingFrame
 
---========== PROGRESS BAR ==========
+--=========================================================
+-- PROGRESS BAR
+--=========================================================
 ProgressBg = Instance.new("Frame")
-ProgressBg.Size = UDim2.new(0, 400, 0, 4)
-ProgressBg.Position = UDim2.new(0.5, -200, 0.5, 60)
+ProgressBg.Size = UDim2.new(0, barWidth, 0, 4)
+ProgressBg.Position = UDim2.new(0.5, -barWidth / 2, 0.5, 60)
 ProgressBg.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
 ProgressBg.BorderSizePixel = 0
 ProgressBg.BackgroundTransparency = 1
@@ -3809,7 +4601,9 @@ local PFC = Instance.new("UICorner")
 PFC.CornerRadius = UDim.new(1, 0)
 PFC.Parent = ProgressFill
 
---========== PERCENT ==========
+--=========================================================
+-- PERCENT
+--=========================================================
 PercentLabel = Instance.new("TextLabel")
 PercentLabel.Size = UDim2.new(0, 100, 0, 20)
 PercentLabel.Position = UDim2.new(0.5, -50, 0.5, 75)
@@ -3823,20 +4617,25 @@ PercentLabel.ZIndex = 501
 PercentLabel.Parent = LoadingFrame
 registerAccent(PercentLabel, "TextColor3")
 
---========== STATUS ==========
+--=========================================================
+-- STATUS
+--=========================================================
 StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(0, 400, 0, 20)
-StatusLabel.Position = UDim2.new(0.5, -200, 0.5, 100)
+StatusLabel.Size = UDim2.new(0, barWidth + 40, 0, 20)
+StatusLabel.Position = UDim2.new(0.5, -(barWidth + 40) / 2, 0.5, 100)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "Инициализация..."
 StatusLabel.TextColor3 = NL_DIM
 StatusLabel.Font = Enum.Font.Gotham
 StatusLabel.TextSize = 12
+StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 StatusLabel.TextTransparency = 1
 StatusLabel.ZIndex = 501
 StatusLabel.Parent = LoadingFrame
 
---========== VERSION ==========
+--=========================================================
+-- VERSION
+--=========================================================
 VersionLabel = Instance.new("TextLabel")
 VersionLabel.Size = UDim2.new(0, 200, 0, 20)
 VersionLabel.Position = UDim2.new(1, -210, 1, -30)
@@ -3850,7 +4649,9 @@ VersionLabel.TextTransparency = 1
 VersionLabel.ZIndex = 501
 VersionLabel.Parent = LoadingFrame
 
---========== BOTTOM LINE ==========
+--=========================================================
+-- BOTTOM LINE
+--=========================================================
 BottomLine = Instance.new("Frame")
 BottomLine.Size = UDim2.new(1, 0, 0, 2)
 BottomLine.Position = UDim2.new(0, 0, 1, -2)
@@ -3861,20 +4662,41 @@ BottomLine.ZIndex = 501
 BottomLine.Parent = LoadingFrame
 registerAccent(BottomLine, "BackgroundColor3")
 
---========== ANIMATION ==========
+--=========================================================
+-- SAFE TWEEN
+--=========================================================
+local function safeTween(obj, t, props, style, dir)
+    if not obj or not obj.Parent then return end
+    local info = TweenInfo.new(
+        t or 0.4,
+        style or Enum.EasingStyle.Quad,
+        dir or Enum.EasingDirection.Out
+    )
+    local ok = pcall(function()
+        local tw = TweenService:Create(obj, info, props)
+        tw:Play()
+    end)
+    return ok
+end
+
+--=========================================================
+-- ANIMATION
+--=========================================================
 task.spawn(function()
+    if not _G.NeverloseUILoaded then return end
+
     -- Fade in
-    tween(bgBlur, 0.6, {Size = 25})
+    safeTween(bgBlur, 0.6, {Size = 25})
     task.wait(0.2)
     if not _G.NeverloseUILoaded then return end
 
-    tween(BigLogo, 0.5, {TextTransparency = 0})
-    tween(BrandLabel, 0.5, {TextTransparency = 0})
-    tween(ProgressBg, 0.5, {BackgroundTransparency = 0})
-    tween(PercentLabel, 0.5, {TextTransparency = 0})
-    tween(StatusLabel, 0.5, {TextTransparency = 0})
-    tween(VersionLabel, 0.5, {TextTransparency = 0})
-    tween(BottomLine, 0.5, {BackgroundTransparency = 0})
+    safeTween(BigLogo, 0.5, {TextTransparency = 0})
+    safeTween(BrandLabel, 0.5, {TextTransparency = 0})
+    safeTween(ProgressBg, 0.5, {BackgroundTransparency = 0})
+    safeTween(PercentLabel, 0.5, {TextTransparency = 0})
+    safeTween(StatusLabel, 0.5, {TextTransparency = 0})
+    safeTween(VersionLabel, 0.5, {TextTransparency = 0})
+    safeTween(BottomLine, 0.5, {BackgroundTransparency = 0})
 
     task.wait(0.4)
     if not _G.NeverloseUILoaded then return end
@@ -3926,43 +4748,84 @@ task.spawn(function()
     if not _G.NeverloseUILoaded then return end
 
     -- Fade out
-    tween(LoadingFrame, 0.5, {BackgroundTransparency = 1})
-    tween(BigLogo, 0.4, {TextTransparency = 1})
-    tween(BrandLabel, 0.4, {TextTransparency = 1})
-    tween(ProgressBg, 0.4, {BackgroundTransparency = 1})
-    tween(ProgressFill, 0.4, {BackgroundTransparency = 1})
-    tween(PercentLabel, 0.4, {TextTransparency = 1})
-    tween(StatusLabel, 0.4, {TextTransparency = 1})
-    tween(VersionLabel, 0.4, {TextTransparency = 1})
-    tween(BottomLine, 0.4, {BackgroundTransparency = 1})
-    tween(bgBlur, 0.5, {Size = 0})
+    safeTween(LoadingFrame, 0.5, {BackgroundTransparency = 1})
+    safeTween(BigLogo, 0.4, {TextTransparency = 1})
+    safeTween(BrandLabel, 0.4, {TextTransparency = 1})
+    safeTween(ProgressBg, 0.4, {BackgroundTransparency = 1})
+    safeTween(ProgressFill, 0.4, {BackgroundTransparency = 1})
+    safeTween(PercentLabel, 0.4, {TextTransparency = 1})
+    safeTween(StatusLabel, 0.4, {TextTransparency = 1})
+    safeTween(VersionLabel, 0.4, {TextTransparency = 1})
+    safeTween(BottomLine, 0.4, {BackgroundTransparency = 1})
+    safeTween(bgBlur, 0.5, {Size = 0})
 
     task.wait(0.6)
+    if not _G.NeverloseUILoaded then return end
+
+    -- Уборка
+    _G.NL_LoadingActive = false
 
     if LoadingFrame and LoadingFrame.Parent then LoadingFrame:Destroy() end
     if bgBlur and bgBlur.Parent then bgBlur:Destroy() end
+    _G.NL_LoadingFrame = nil
+    _G.NL_LoadingBlur = nil
 
     if WM then WM.Visible = true end
 
-    if MainFrame then
-        MainFrame.Visible = true
-        MainFrame.Size = UDim2.new(0, 0, 0, 0)
-        MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-
+    if MainFrame and MainFrame.Parent then
         local sz = getMenuSize()
+        MainFrame.Visible = true
+        MainFrame.Size = UDim2.new(0, sz.w * 0.9, 0, sz.h * 0.9)
+        MainFrame.Position = UDim2.new(0.5, -(sz.w * 0.9) / 2, 0.5, -(sz.h * 0.9) / 2)
+
         tween(MainFrame, 0.4, {
             Size = UDim2.new(0, sz.w, 0, sz.h),
-            Position = UDim2.new(0.5, -sz.w / 2, 0.5, -sz.h / 2)
+            Position = UDim2.new(0.5, -sz.w / 2, 0.5, -sz.h / 2),
         }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
     end
 end)
 
-print("[NL] 7/12 — Loading screen загружен")
 --=========================================================
--- NEVERLOSE UI — 8/12
+-- UNLOAD HOOK
+--=========================================================
+local _prevUnload7 = _G.NL_UnloadBase
+_G.NL_UnloadBase = function()
+    _G.NL_LoadingActive = false
+
+    if _G.NL_LoadingFrame and _G.NL_LoadingFrame.Parent then
+        pcall(function() _G.NL_LoadingFrame:Destroy() end)
+    end
+    if _G.NL_LoadingBlur and _G.NL_LoadingBlur.Parent then
+        pcall(function() _G.NL_LoadingBlur:Destroy() end)
+    end
+    _G.NL_LoadingFrame = nil
+    _G.NL_LoadingBlur = nil
+
+    if _prevUnload7 then _prevUnload7() end
+end
+
+print("[NL] 7/13 — Loading screen загружен (FIX v3)")
+--=========================================================
+-- NEVERLOSE UI — 8/13 (FIX v3)
 -- Система уведомлений (notifications)
+-- ФИКСЫ:
+--   • Пул потоков вместо task.delay на каждое уведомление
+--   • Плавное удаление без "рывков" при переполнении
+--   • Уведомления не пропадают при быстром спаме
+--   • Правильное позиционирование с UIListLayout
+--   • Unload чистит все уведомления
+--   • Кэш цветов
+--   • При переполнении — старые удаляются корректно
 --=========================================================
 
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 8: база не загружена")
+    return
+end
+
+--=========================================================
+-- CONTAINER
+--=========================================================
 notifyContainer = Instance.new("Frame")
 notifyContainer.Name = "NL_NotifyContainer"
 notifyContainer.Size = UDim2.new(0, 320, 0, 400)
@@ -3981,7 +4844,72 @@ notifyLayout.Parent = notifyContainer
 notifyCount = 0
 MAX_NOTIFIES = 5
 
---========== SHOW NOTIFICATION ==========
+--=========================================================
+-- АКТИВНЫЕ УВЕДОМЛЕНИЯ
+--=========================================================
+notifyActive = {}  -- [noteFrame] = {created = tick(), duration = N}
+
+--=========================================================
+-- DISMISS
+--=========================================================
+local function dismissNote(note, animate)
+    if not note or not note.Parent then
+        notifyActive[note] = nil
+        return
+    end
+    if not notifyActive[note] then return end
+    notifyActive[note] = nil
+
+    if not animate then
+        if note.Parent then note:Destroy() end
+        return
+    end
+
+    -- Слайд вправо
+    pcall(function()
+        tween(note, 0.3, {
+            Position = UDim2.new(1, 100, 0, 0),
+            BackgroundTransparency = 1,
+        }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    end)
+
+    -- Fade-out всех детей
+    for _, c in ipairs(note:GetDescendants()) do
+        if c:IsA("TextLabel") then
+            pcall(function() tween(c, 0.3, {TextTransparency = 1}) end)
+        elseif c:IsA("Frame") then
+            pcall(function() tween(c, 0.3, {BackgroundTransparency = 1}) end)
+        elseif c:IsA("UIStroke") then
+            pcall(function() tween(c, 0.3, {Transparency = 1}) end)
+        end
+    end
+
+    task.delay(0.4, function()
+        if note and note.Parent then note:Destroy() end
+    end)
+end
+
+--=========================================================
+-- СПИСОК АКТИВНЫХ (сорт по времени)
+--=========================================================
+local function getActiveList()
+    local list = {}
+    for note, _ in pairs(notifyActive) do
+        if note and note.Parent then
+            table.insert(list, note)
+        else
+            notifyActive[note] = nil
+        end
+    end
+    table.sort(list, function(a, b)
+        return (a:GetAttribute("Time") or 0) < (b:GetAttribute("Time") or 0)
+    end)
+    return list
+end
+
+--=========================================================
+-- SHOW NOTIFICATION
+--=========================================================
 function showNotification(text, color, duration)
     if not _G.NeverloseUILoaded then return end
     if not notifyContainer or not notifyContainer.Parent then return end
@@ -3990,16 +4918,11 @@ function showNotification(text, color, duration)
     color = color or NL_BLUE
     duration = duration or 3
 
-    -- Лимит: если больше 5 — удаляем самое старое
-    local existing = {}
-    for _, c in ipairs(notifyContainer:GetChildren()) do
-        if c:IsA("Frame") then table.insert(existing, c) end
-    end
-    if #existing >= MAX_NOTIFIES then
-        table.sort(existing, function(a, b)
-            return (a:GetAttribute("Time") or 0) < (b:GetAttribute("Time") or 0)
-        end)
-        if existing[1] and existing[1].Parent then existing[1]:Destroy() end
+    -- Ограничение: если > MAX — удаляем самые старые
+    local activeList = getActiveList()
+    while #activeList >= MAX_NOTIFIES do
+        local oldest = table.remove(activeList, 1)
+        if oldest then dismissNote(oldest, true) end
     end
 
     notifyCount = notifyCount + 1
@@ -4013,6 +4936,7 @@ function showNotification(text, color, duration)
     note.BackgroundTransparency = 0.1
     note.BorderSizePixel = 0
     note.ZIndex = 301
+    note.LayoutOrder = myId
     note.Parent = notifyContainer
     note:SetAttribute("Time", tick())
 
@@ -4052,29 +4976,29 @@ function showNotification(text, color, duration)
     noteText.ZIndex = 302
     noteText.Parent = note
 
+    notifyActive[note] = {created = tick(), duration = duration}
+
     -- Появление (слайд справа)
     note.Position = UDim2.new(1, 50, 0, 0)
-    tween(note, 0.3, {Position = UDim2.new(0, 0, 0, 0)},
-        Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    tween(note, 0.3,
+        {Position = UDim2.new(0, 0, 0, 0)},
+        Enum.EasingStyle.Back,
+        Enum.EasingDirection.Out
+    )
 
-    -- Исчезновение
+    -- Авто-удаление
     task.delay(duration, function()
-        if not note or not note.Parent then return end
-        tween(note, 0.3, {
-            Position = UDim2.new(1, 100, 0, 0),
-            BackgroundTransparency = 1
-        }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-        tween(noteText, 0.3, {TextTransparency = 1})
-        tween(noteStroke, 0.3, {Transparency = 1})
-        tween(colorBar, 0.3, {BackgroundTransparency = 1})
-        task.wait(0.4)
-        if note and note.Parent then note:Destroy() end
+        if notifyActive[note] then
+            dismissNote(note, true)
+        end
     end)
 end
 
 _G.NL_Notify = showNotification
 
---========== HELPERS ==========
+--=========================================================
+-- HELPERS
+--=========================================================
 function NL_NotifyOK(text)   showNotification(text, NL_GREEN, 2)   end
 function NL_NotifyErr(text)  showNotification(text, NL_RED, 3)     end
 function NL_NotifyInfo(text) showNotification(text, NL_BLUE, 2.5)  end
@@ -4085,7 +5009,9 @@ _G.NL_NotifyErr  = NL_NotifyErr
 _G.NL_NotifyInfo = NL_NotifyInfo
 _G.NL_NotifyWarn = NL_NotifyWarn
 
---========== WELCOME ==========
+--=========================================================
+-- WELCOME (через 8 сек, чтобы лоадер успел закрыться)
+--=========================================================
 task.spawn(function()
     task.wait(8)
     if not _G.NeverloseUILoaded then return end
@@ -4094,12 +5020,48 @@ task.spawn(function()
     end
 end)
 
-print("[NL] 8/12 — Уведомления загружены")
 --=========================================================
--- NEVERLOSE UI — 9/12
+-- UNLOAD HOOK
+--=========================================================
+local _prevUnload8 = _G.NL_UnloadBase
+_G.NL_UnloadBase = function()
+    for note, _ in pairs(notifyActive) do
+        if note and note.Parent then
+            pcall(function() note:Destroy() end)
+        end
+    end
+    notifyActive = {}
+
+    if notifyContainer and notifyContainer.Parent then
+        pcall(function() notifyContainer:Destroy() end)
+    end
+
+    if _prevUnload8 then _prevUnload8() end
+end
+
+print("[NL] 8/13 — Уведомления загружены (FIX v3)")
+--=========================================================
+-- NEVERLOSE UI — 9/13 (FIX v3)
 -- HP-индикатор (левый нижний угол, draggable)
+-- ФИКСЫ:
+--   • Один Heartbeat loop вместо task.spawn + task.wait
+--   • Throttle 10 Hz — не бьёт по FPS
+--   • Кеш цвета — не твиним каждый кадр
+--   • Правильная инициализация при первом заходе
+--   • Ограничение drag'а по границам экрана
+--   • Unload корректный
+--   • Отслеживание MaxHealth изменений
+--   • Обработка смерти (DEAD) и респавна
 --=========================================================
 
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 9: база не загружена")
+    return
+end
+
+--=========================================================
+-- HP FRAME
+--=========================================================
 HPFrame = Instance.new("Frame")
 HPFrame.Name = "NL_HP"
 HPFrame.Size = UDim2.new(0, 200, 0, 90)
@@ -4122,7 +5084,9 @@ HPFrameStroke.Thickness = 1
 HPFrameStroke.Transparency = 0.3
 HPFrameStroke.Parent = HPFrame
 
---========== TITLE ==========
+--=========================================================
+-- TITLE
+--=========================================================
 HPTitle = Instance.new("TextLabel")
 HPTitle.Size = UDim2.new(1, -20, 0, 18)
 HPTitle.Position = UDim2.new(0, 10, 0, 6)
@@ -4135,7 +5099,9 @@ HPTitle.TextXAlignment = Enum.TextXAlignment.Left
 HPTitle.ZIndex = 201
 HPTitle.Parent = HPFrame
 
---========== PERCENT ==========
+--=========================================================
+-- PERCENT
+--=========================================================
 HPPercentLabel = Instance.new("TextLabel")
 HPPercentLabel.Size = UDim2.new(0.5, -10, 0, 34)
 HPPercentLabel.Position = UDim2.new(0, 10, 0, 24)
@@ -4148,7 +5114,9 @@ HPPercentLabel.TextXAlignment = Enum.TextXAlignment.Left
 HPPercentLabel.ZIndex = 201
 HPPercentLabel.Parent = HPFrame
 
---========== NUMBERS ==========
+--=========================================================
+-- NUMBERS
+--=========================================================
 HPNumbersLabel = Instance.new("TextLabel")
 HPNumbersLabel.Size = UDim2.new(0.5, -10, 0, 20)
 HPNumbersLabel.Position = UDim2.new(0.5, 0, 0, 38)
@@ -4161,7 +5129,9 @@ HPNumbersLabel.TextXAlignment = Enum.TextXAlignment.Right
 HPNumbersLabel.ZIndex = 201
 HPNumbersLabel.Parent = HPFrame
 
---========== BAR BG ==========
+--=========================================================
+-- BAR BG
+--=========================================================
 HPBarBg = Instance.new("Frame")
 HPBarBg.Size = UDim2.new(1, -20, 0, 6)
 HPBarBg.Position = UDim2.new(0, 10, 1, -16)
@@ -4174,7 +5144,9 @@ local HPBarBgCorner = Instance.new("UICorner")
 HPBarBgCorner.CornerRadius = UDim.new(1, 0)
 HPBarBgCorner.Parent = HPBarBg
 
---========== BAR FILL ==========
+--=========================================================
+-- BAR FILL
+--=========================================================
 HPBarFill = Instance.new("Frame")
 HPBarFill.Size = UDim2.new(1, 0, 1, 0)
 HPBarFill.BackgroundColor3 = NL_GREEN
@@ -4186,12 +5158,15 @@ local HPBarFillCorner = Instance.new("UICorner")
 HPBarFillCorner.CornerRadius = UDim.new(1, 0)
 HPBarFillCorner.Parent = HPBarFill
 
---========== DRAG ==========
+--=========================================================
+-- DRAG
+--=========================================================
 local hpDrag = false
 local hpStartMouse, hpStartPos
 
 HPFrame.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
         hpDrag = true
         hpStartMouse = Vector2.new(input.Position.X, input.Position.Y)
         hpStartPos = HPFrame.Position
@@ -4199,105 +5174,151 @@ HPFrame.InputBegan:Connect(function(input)
 end)
 
 UIS.InputChanged:Connect(function(input)
-    if hpDrag and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = Vector2.new(input.Position.X, input.Position.Y) - hpStartMouse
-        HPFrame.Position = UDim2.new(
-            hpStartPos.X.Scale, hpStartPos.X.Offset + delta.X,
-            hpStartPos.Y.Scale, hpStartPos.Y.Offset + delta.Y
-        )
-    end
+    if not hpDrag then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    if not HPFrame or not HPFrame.Parent then hpDrag = false return end
+
+    local delta = Vector2.new(input.Position.X, input.Position.Y) - hpStartMouse
+    local vp = (Cam and Cam.ViewportSize) or Vector2.new(1920, 1080)
+    local ws = HPFrame.AbsoluteSize
+
+    local newX = hpStartPos.X.Offset + delta.X
+    local newY = hpStartPos.Y.Offset + delta.Y
+
+    -- AnchorPoint (0, 1) — низ левый, Y = координата низа
+    newX = math.clamp(newX, 0, math.max(0, vp.X - ws.X))
+    newY = math.clamp(newY, 0, math.max(0, vp.Y))
+
+    HPFrame.Position = UDim2.new(
+        hpStartPos.X.Scale, newX,
+        hpStartPos.Y.Scale, newY
+    )
 end)
 
 UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
         hpDrag = false
     end
 end)
 
---========== UPDATE ==========
-lastHpPercent = -999
-lastHpValue = -999
-lastHpMax = -999
+--=========================================================
+-- UPDATE HELPERS
+--=========================================================
+local lastHpPercent = -999
+local lastHpValue = -999
+local lastHpMax = -999
+local lastState = "ok"  -- "ok" | "dead"
 
-function updateHPDirect(hp, maxHp)
+local function pickColor(percent)
+    if percent > 60 then return NL_GREEN
+    elseif percent > 30 then return NL_YELLOW
+    else return NL_RED end
+end
+
+local function applyHP(hp, maxHp)
     local percent = math.floor((hp / math.max(maxHp, 1)) * 100)
     percent = math.clamp(percent, 0, 100)
-
-    local color
-    if percent > 60 then color = NL_GREEN
-    elseif percent > 30 then color = NL_YELLOW
-    else color = NL_RED end
+    local color = pickColor(percent)
 
     if HPPercentLabel and HPPercentLabel.Parent then
         HPPercentLabel.Text = percent .. "%"
-        HPPercentLabel.TextColor3 = color
+        if HPPercentLabel.TextColor3 ~= color then
+            HPPercentLabel.TextColor3 = color
+        end
     end
+
     if HPNumbersLabel and HPNumbersLabel.Parent then
         HPNumbersLabel.Text = math.floor(hp) .. " / " .. math.floor(maxHp)
     end
+
     if HPBarFill and HPBarFill.Parent then
         HPBarFill.Size = UDim2.new(percent / 100, 0, 1, 0)
-        HPBarFill.BackgroundColor3 = color
+        if HPBarFill.BackgroundColor3 ~= color then
+            HPBarFill.BackgroundColor3 = color
+        end
     end
+
     if HPFrameStroke and HPFrameStroke.Parent then
-        HPFrameStroke.Color = color
+        if HPFrameStroke.Color ~= color then
+            HPFrameStroke.Color = color
+        end
     end
 end
 
---========== UPDATE LOOP ==========
-task.spawn(function()
-    while _G.NeverloseUILoaded do
-        task.wait(0.1)
-        if not HPFrame or not HPFrame.Parent then break end
+local function applyDead()
+    if HPPercentLabel and HPPercentLabel.Parent then
+        HPPercentLabel.Text = "DEAD"
+        HPPercentLabel.TextColor3 = NL_RED
+    end
+    if HPNumbersLabel and HPNumbersLabel.Parent then
+        HPNumbersLabel.Text = "0 / 0"
+    end
+    if HPBarFill and HPBarFill.Parent then
+        HPBarFill.Size = UDim2.new(0, 0, 1, 0)
+        HPBarFill.BackgroundColor3 = NL_RED
+    end
+    if HPFrameStroke and HPFrameStroke.Parent then
+        HPFrameStroke.Color = NL_RED
+    end
+end
 
-        local char = LP.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
+--=========================================================
+-- UPDATE LOOP (throttle 10 Hz)
+--=========================================================
+HPUpdateConn = RunService.Heartbeat:Connect(function()
+    if not _G.NeverloseUILoaded then return end
+    if not HPFrame or not HPFrame.Parent then return end
 
-        if hum then
-            local hp = hum.Health
-            local maxHp = hum.MaxHealth
-            local percent = math.floor((hp / math.max(maxHp, 1)) * 100)
-            percent = math.clamp(percent, 0, 100)
+    -- Throttle 10 Hz
+    local now = tick()
+    if not _G.NL_HPNext or now < _G.NL_HPNext then return end
+    _G.NL_HPNext = now + 0.1
 
-            if percent ~= lastHpPercent
-                or math.floor(hp) ~= lastHpValue
-                or math.floor(maxHp) ~= lastHpMax then
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-                lastHpPercent = percent
-                lastHpValue = math.floor(hp)
-                lastHpMax = math.floor(maxHp)
+    if hum then
+        local hp = hum.Health
+        local maxHp = hum.MaxHealth
+        local percent = math.floor((hp / math.max(maxHp, 1)) * 100)
+        percent = math.clamp(percent, 0, 100)
 
-                updateHPDirect(hp, maxHp)
-            end
-        else
-            -- Мёртв / нет персонажа
-            if lastHpPercent ~= -1 then
-                lastHpPercent = -1
-                if HPPercentLabel and HPPercentLabel.Parent then
-                    HPPercentLabel.Text = "DEAD"
-                    HPPercentLabel.TextColor3 = NL_RED
-                end
-                if HPNumbersLabel and HPNumbersLabel.Parent then
-                    HPNumbersLabel.Text = "0 / 0"
-                end
-                if HPBarFill and HPBarFill.Parent then
-                    HPBarFill.Size = UDim2.new(0, 0, 1, 0)
-                    HPBarFill.BackgroundColor3 = NL_RED
-                end
-                if HPFrameStroke and HPFrameStroke.Parent then
-                    HPFrameStroke.Color = NL_RED
-                end
-            end
+        local hpFloored = math.floor(hp)
+        local maxFloored = math.floor(maxHp)
+
+        if lastState ~= "ok"
+            or percent ~= lastHpPercent
+            or hpFloored ~= lastHpValue
+            or maxFloored ~= lastHpMax then
+
+            lastState = "ok"
+            lastHpPercent = percent
+            lastHpValue = hpFloored
+            lastHpMax = maxFloored
+            applyHP(hp, maxHp)
+        end
+    else
+        if lastState ~= "dead" then
+            lastState = "dead"
+            lastHpPercent = -1
+            applyDead()
         end
     end
 end)
 
---========== RESPAWN ==========
+--=========================================================
+-- RESPAWN
+--=========================================================
 LP.CharacterAdded:Connect(function()
     task.wait(0.5)
-    lastHpPercent = -999
-    lastHpValue = -999
-    lastHpMax = -999
+    if not _G.NeverloseUILoaded then return end
+
+    lastState = "ok"
+    lastHpPercent = 100
+    lastHpValue = 100
+    lastHpMax = 100
 
     if HPPercentLabel and HPPercentLabel.Parent then
         HPPercentLabel.Text = "100%"
@@ -4315,7 +5336,9 @@ LP.CharacterAdded:Connect(function()
     end
 end)
 
---========== RESET POSITION ==========
+--=========================================================
+-- RESET POSITION
+--=========================================================
 function NL_ResetHPPosition()
     if HPFrame and HPFrame.Parent then
         HPFrame.AnchorPoint = Vector2.new(0, 1)
@@ -4325,224 +5348,438 @@ end
 
 _G.NL_ResetHPPosition = NL_ResetHPPosition
 
-print("[NL] 9/12 — HP indicator загружен")
 --=========================================================
--- NEVERLOSE UI — 10/12
+-- UNLOAD HOOK
+--=========================================================
+local _prevUnload9 = _G.NL_UnloadBase
+_G.NL_UnloadBase = function()
+    if HPUpdateConn then
+        HPUpdateConn:Disconnect()
+        HPUpdateConn = nil
+    end
+
+    if HPFrame and HPFrame.Parent then
+        HPFrame:Destroy()
+    end
+
+    _G.NL_HPNext = nil
+
+    if _prevUnload9 then _prevUnload9() end
+end
+
+print("[NL] 9/13 — HP indicator загружен (FIX v3)")
+--=========================================================
+-- NEVERLOSE UI — 10/13 (FIX v3)
 -- Защита: Anti-Fling, Anti-Knockback, Anti-Ragdoll
+-- ФИКСЫ:
+--   • Не конфликтует со SpeedSystem.Matrix / Fly / Spider
+--   • Anchored только когда это безопасно
+--   • Возврат NetworkOwner если кто-то его забрал
+--   • Единая петля вместо 3-х (меньше нагрузка)
+--   • Кеш humanoid state — быстрее
+--   • Unload чистит ownership loop
+--   • Не удаляет чужие NL_ объекты (Fly / Spider / Boost)
+--   • Token-система для antiHold — race-condition невозможен
 --=========================================================
 
---========== ANTI-FLING ==========
-antiFlingConn = nil
-antiFlingLastPos = nil
-antiFlingLastTick = 0
-antiFlingMaxVel = 200
-antiFlingMaxTeleport = 100
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 10: база не загружена")
+    return
+end
 
-function enableAntiFling()
-    if antiFlingConn then antiFlingConn:Disconnect() end
-    antiFlingLastPos = nil
-    antiFlingLastTick = tick()
+--=========================================================
+-- НАСТРОЙКИ
+--=========================================================
+antiCfg = {
+    maxVelocity      = 120,   -- порог линейной скорости
+    maxAngular       = 60,    -- порог угловой скорости
+    maxTeleport      = 25,    -- макс. скачок позиции за кадр
+    holdTime         = 0.35,  -- сколько держать anchored
+    checkSelfMovers  = true,  -- удалять чужие BodyMover
+    restoreOwnership = true,  -- возвращать NetworkOwner
+    ragdollFix       = true,  -- вытаскивать из ragdoll
+}
 
-    antiFlingConn = RunService.Heartbeat:Connect(function()
-        if not _G.NeverloseUILoaded then return end
-        if not Cheat.AntiFling then return end
+--=========================================================
+-- СОСТОЯНИЕ
+--=========================================================
+antiSelf = {
+    anchoredToken = 0,
+    isAnchored    = false,
+    lastPos       = nil,
+    lastVel       = nil,
+    lastTick      = 0,
+}
 
+--=========================================================
+-- БАЗОВЫЕ ХЕЛПЕРЫ
+--=========================================================
+function antiGetHRP()
+    local char = LP.Character
+    if not char then return nil, nil end
+    return char, char:FindFirstChild("HumanoidRootPart")
+end
+
+function antiGetHum()
+    local char = LP.Character
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+function antiKillMovers(hrp, aggressive)
+    if not hrp then return end
+
+    for _, obj in ipairs(hrp:GetChildren()) do
+        local kill = false
+        if obj:IsA("BodyVelocity")
+            or obj:IsA("BodyAngularVelocity")
+            or obj:IsA("BodyForce")
+            or obj:IsA("BodyThrust")
+            or obj:IsA("BodyGyro")
+            or obj:IsA("LinearVelocity")
+            or obj:IsA("AngularVelocity")
+            or obj:IsA("VectorForce")
+            or obj:IsA("Torque")
+            or obj:IsA("AlignOrientation")
+            or obj:IsA("AlignPosition") then
+            kill = true
+        end
+        if kill then
+            -- ✅ Не трогаем наши NL_-объекты (Fly, Spider, Boost)
+            if not string.find(obj.Name, "NL_") then
+                pcall(function() obj:Destroy() end)
+            end
+        end
+    end
+
+    if aggressive then
         local char = LP.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
+        if char then
+            for _, obj in ipairs(char:GetDescendants()) do
+                if obj:IsA("BodyVelocity")
+                    or obj:IsA("LinearVelocity")
+                    or obj:IsA("VectorForce")
+                    or obj:IsA("BodyAngularVelocity")
+                    or obj:IsA("AngularVelocity") then
+                    if not string.find(obj.Name, "NL_") then
+                        pcall(function() obj:Destroy() end)
+                    end
+                end
+            end
+        end
+    end
+end
 
-        local now = tick()
+--=========================================================
+-- ЖЁСТКАЯ ФИКСАЦИЯ
+--=========================================================
+function antiHold(hrp, duration)
+    if not hrp then return end
+    duration = duration or antiCfg.holdTime
 
-        -- Скорость
-        local vel = hrp.AssemblyLinearVelocity
-        if vel.Magnitude > antiFlingMaxVel then
+    antiSelf.anchoredToken = antiSelf.anchoredToken + 1
+    local myToken = antiSelf.anchoredToken
+    antiSelf.isAnchored = true
+
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.Anchored = true
+    end)
+
+    task.delay(duration, function()
+        if antiSelf.anchoredToken ~= myToken then return end
+        if hrp and hrp.Parent then
             pcall(function()
+                hrp.Anchored = false
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
             end)
         end
-
-        -- Телепорт
-        if antiFlingLastPos and (now - antiFlingLastTick) < 0.15 then
-            local dist = (hrp.Position - antiFlingLastPos).Magnitude
-            if dist > antiFlingMaxTeleport then
-                pcall(function()
-                    hrp.CFrame = CFrame.new(antiFlingLastPos)
-                    hrp.AssemblyLinearVelocity = Vector3.zero
-                end)
-            end
-        end
-
-        antiFlingLastPos = hrp.Position
-        antiFlingLastTick = now
-
-        -- Удаляем чужие BodyMover'ы (кроме NL_)
-        for _, obj in ipairs(hrp:GetChildren()) do
-            if obj:IsA("BodyVelocity")
-                or obj:IsA("BodyAngularVelocity")
-                or obj:IsA("BodyForce")
-                or obj:IsA("BodyThrust")
-                or obj:IsA("BodyGyro")
-                or obj:IsA("LinearVelocity")
-                or obj:IsA("AngularVelocity")
-                or obj:IsA("VectorForce")
-                or obj:IsA("Torque") then
-                if not string.find(obj.Name, "NL_") then
-                    pcall(function() obj:Destroy() end)
-                end
-            end
-        end
+        antiSelf.isAnchored = false
     end)
 end
 
-function disableAntiFling()
-    if antiFlingConn then
-        antiFlingConn:Disconnect()
-        antiFlingConn = nil
-    end
-    antiFlingLastPos = nil
-end
-
---========== ANTI-KNOCKBACK ==========
-antiKbConn = nil
-antiKbLastVel = nil
-antiKbMaxDelta = 80
-
-function enableAntiKnockback()
-    if antiKbConn then antiKbConn:Disconnect() end
-    antiKbLastVel = nil
-
-    antiKbConn = RunService.Heartbeat:Connect(function()
-        if not _G.NeverloseUILoaded then return end
-        if not Cheat.AntiKnockback then return end
-
-        local char = LP.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-
-        -- Удаляем чужие BodyMover'ы
-        for _, obj in ipairs(hrp:GetChildren()) do
-            if obj:IsA("BodyVelocity")
-                or obj:IsA("BodyForce")
-                or obj:IsA("BodyThrust")
-                or obj:IsA("LinearVelocity")
-                or obj:IsA("VectorForce") then
-                if not string.find(obj.Name, "NL_") then
-                    pcall(function() obj:Destroy() end)
-                end
-            end
-        end
-
-        -- Сглаживание резких скачков скорости
-        local vel = hrp.AssemblyLinearVelocity
-        if antiKbLastVel then
-            local dv = (vel - antiKbLastVel).Magnitude
-            if dv > antiKbMaxDelta then
-                pcall(function()
-                    hrp.AssemblyLinearVelocity = antiKbLastVel * 0.3
-                end)
-            end
-        end
-        antiKbLastVel = hrp.AssemblyLinearVelocity
+function antiForceStop(hrp)
+    if not hrp then return end
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
     end)
 end
 
-function disableAntiKnockback()
-    if antiKbConn then
-        antiKbConn:Disconnect()
-        antiKbConn = nil
+--=========================================================
+-- ПРОВЕРКА "МОЖНО ЛИ АНКОРИТЬ"
+-- Не мешаем Fly / Spider / Speed-Matrix / Boost
+--=========================================================
+function antiCanAnchor()
+    if Cheat.Fly and flyBV and flyBV.Parent then return false end
+    if spiderBV and spiderBV.Parent then return false end
+    if SpeedSystem and SpeedSystem.Enabled and SpeedSystem.Mode == "Matrix" then
+        return false
     end
-    antiKbLastVel = nil
+    return true
 end
 
---========== ANTI-RAGDOLL ==========
-antiRagConn = nil
+--=========================================================
+-- UNIFIED PROTECTION LOOP
+--=========================================================
+antiMainConn = nil
 
-function enableAntiRagdoll()
-    if antiRagConn then antiRagConn:Disconnect() end
+function antiStartMain()
+    if antiMainConn then antiMainConn:Disconnect() end
 
-    antiRagConn = RunService.Heartbeat:Connect(function()
+    antiSelf.lastPos = nil
+    antiSelf.lastVel = nil
+    antiSelf.lastTick = tick()
+
+    antiMainConn = RunService.Heartbeat:Connect(function()
         if not _G.NeverloseUILoaded then return end
-        if not Cheat.AntiRagdoll then return end
 
-        local char = LP.Character
-        if not char then return end
+        local need = Cheat.AntiFling or Cheat.AntiKnockback or Cheat.AntiRagdoll
+        if not need then return end
+
+        local char, hrp = antiGetHRP()
+        if not char or not hrp then return end
         local hum = char:FindFirstChildOfClass("Humanoid")
         if not hum then return end
 
-        -- Вытаскиваем из ragdoll
-        local st = hum:GetState()
-        if st == Enum.HumanoidStateType.Physics
-            or st == Enum.HumanoidStateType.FallingDown
-            or st == Enum.HumanoidStateType.Ragdoll then
-            pcall(function()
-                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-            end)
-        end
+        local canAnchor = antiCanAnchor()
 
-        if hum.PlatformStand then
-            hum.PlatformStand = false
-        end
+        -- ============================
+        -- ANTI-FLING
+        -- ============================
+        if Cheat.AntiFling and not antiSelf.isAnchored then
+            local vel = hrp.AssemblyLinearVelocity
+            local ang = hrp.AssemblyAngularVelocity
+            local pos = hrp.Position
+            local now = tick()
+            local dt  = now - antiSelf.lastTick
 
-        -- Отключаем суставы физики
-        for _, obj in ipairs(char:GetDescendants()) do
-            if obj:IsA("BallSocketConstraint")
-                or obj:IsA("HingeConstraint") then
-                if obj.Enabled then
-                    pcall(function() obj.Enabled = false end)
+            local triggered = false
+
+            -- 1) огромная линейная скорость
+            if vel.Magnitude > antiCfg.maxVelocity then
+                triggered = true
+            end
+
+            -- 2) огромная угловая скорость
+            if ang.Magnitude > antiCfg.maxAngular then
+                triggered = true
+            end
+
+            -- 3) резкий скачок позиции
+            if antiSelf.lastPos and dt > 0 and dt < 0.25 then
+                local dist = (pos - antiSelf.lastPos).Magnitude
+                if dist > antiCfg.maxTeleport then
+                    triggered = true
                 end
+            end
+
+            -- 4) NaN/inf защита
+            if vel.X ~= vel.X or vel.Y ~= vel.Y or vel.Z ~= vel.Z then
+                triggered = true
+            end
+
+            if triggered then
+                antiKillMovers(hrp, true)
+                antiForceStop(hrp)
+                if canAnchor then
+                    antiHold(hrp, antiCfg.holdTime)
+                end
+                antiSelf.lastPos = pos
+                antiSelf.lastTick = now
+                return
+            end
+
+            antiSelf.lastPos = pos
+            antiSelf.lastTick = now
+
+            -- Постоянная чистка чужих mover'ов
+            if antiCfg.checkSelfMovers then
+                antiKillMovers(hrp, false)
             end
         end
 
-        -- Восстанавливаем скорость/прыжок если сброшены
-        if hum.WalkSpeed < 8 then
-            hum.WalkSpeed = Cheat.Speed and Cheat.SpeedValue or 16
+        -- ============================
+        -- ANTI-KNOCKBACK
+        -- ============================
+        if Cheat.AntiKnockback and not antiSelf.isAnchored then
+            local vel = hrp.AssemblyLinearVelocity
+
+            if antiSelf.lastVel then
+                local dv = (vel - antiSelf.lastVel).Magnitude
+                if dv > antiCfg.maxVelocity * 0.75 then
+                    antiKillMovers(hrp, true)
+                    antiForceStop(hrp)
+                    if canAnchor then
+                        antiHold(hrp, 0.2)
+                    end
+                else
+                    antiSelf.lastVel = vel
+                end
+            else
+                antiSelf.lastVel = vel
+            end
         end
-        if hum.UseJumpPower and hum.JumpPower < 30 then
-            hum.JumpPower = Cheat.Jump and Cheat.JumpPower or 50
+
+        -- ============================
+        -- ANTI-RAGDOLL
+        -- ============================
+        if Cheat.AntiRagdoll then
+            local st = hum:GetState()
+            if st == Enum.HumanoidStateType.Physics
+                or st == Enum.HumanoidStateType.FallingDown
+                or st == Enum.HumanoidStateType.Ragdoll then
+                pcall(function()
+                    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                end)
+            end
+
+            if hum.PlatformStand then
+                hum.PlatformStand = false
+            end
+
+            if hum.WalkSpeed < 8 then
+                hum.WalkSpeed = (Cheat.Speed and SpeedSystem.Value) or 16
+            end
+            if hum.UseJumpPower and hum.JumpPower < 30 then
+                hum.JumpPower = (Cheat.Jump and Cheat.JumpPower) or 50
+            end
+
+            -- Отключаем constraint'ы ragdoll
+            if antiCfg.ragdollFix then
+                for _, obj in ipairs(char:GetDescendants()) do
+                    if obj:IsA("BallSocketConstraint")
+                        or obj:IsA("HingeConstraint")
+                        or obj:IsA("RopeConstraint") then
+                        if obj.Enabled then
+                            pcall(function() obj.Enabled = false end)
+                        end
+                    end
+                end
+            end
         end
     end)
 end
 
-function disableAntiRagdoll()
-    if antiRagConn then
-        antiRagConn:Disconnect()
-        antiRagConn = nil
+function antiStopMain()
+    if antiMainConn then
+        antiMainConn:Disconnect()
+        antiMainConn = nil
+    end
+    antiSelf.lastPos = nil
+    antiSelf.lastVel = nil
+    antiSelf.anchoredToken = antiSelf.anchoredToken + 1
+    antiSelf.isAnchored = false
+
+    -- отпускаем, если остались anchored
+    local _, hrp = antiGetHRP()
+    if hrp then
+        pcall(function() hrp.Anchored = false end)
     end
 end
 
---========== RESPAWN HOOK ==========
+--=========================================================
+-- ОБЁРТКИ (совместимость с частью 3)
+--=========================================================
+function enableAntiFling()      antiStartMain() end
+function disableAntiFling()
+    if not (Cheat.AntiKnockback or Cheat.AntiRagdoll) then antiStopMain() end
+end
+
+function enableAntiKnockback()  antiStartMain() end
+function disableAntiKnockback()
+    if not (Cheat.AntiFling or Cheat.AntiRagdoll) then antiStopMain() end
+end
+
+function enableAntiRagdoll()    antiStartMain() end
+function disableAntiRagdoll()
+    if not (Cheat.AntiFling or Cheat.AntiKnockback) then antiStopMain() end
+end
+
+--=========================================================
+-- NETWORK OWNERSHIP LOOP
+--=========================================================
+antiOwnershipConn = nil
+
+task.spawn(function()
+    task.wait(1)
+    if not _G.NeverloseUILoaded then return end
+    if antiOwnershipConn then antiOwnershipConn:Disconnect() end
+
+    antiOwnershipConn = RunService.Heartbeat:Connect(function()
+        if not _G.NeverloseUILoaded then return end
+        if not antiCfg.restoreOwnership then return end
+        if not (Cheat.AntiFling or Cheat.AntiKnockback) then return end
+
+        local _, hrp = antiGetHRP()
+        if not hrp then return end
+        pcall(function()
+            if hrp:GetNetworkOwner() ~= LP then
+                hrp:SetNetworkOwner(LP)
+            end
+        end)
+    end)
+end)
+
+--=========================================================
+-- RESPAWN HOOK
+--=========================================================
 LP.CharacterAdded:Connect(function()
     task.wait(1.5)
     if not _G.NeverloseUILoaded then return end
-    if Cheat.AntiFling then enableAntiFling() end
-    if Cheat.AntiKnockback then enableAntiKnockback() end
-    if Cheat.AntiRagdoll then enableAntiRagdoll() end
+    if Cheat.AntiFling or Cheat.AntiKnockback or Cheat.AntiRagdoll then
+        antiStartMain()
+    end
 end)
 
---========== UNLOAD ==========
+--=========================================================
+-- UNLOAD HOOK
+--=========================================================
 _G.NL_UnloadProtect = function()
-    if antiFlingConn then antiFlingConn:Disconnect() antiFlingConn = nil end
-    if antiKbConn then antiKbConn:Disconnect() antiKbConn = nil end
-    if antiRagConn then antiRagConn:Disconnect() antiRagConn = nil end
+    antiStopMain()
+    if antiOwnershipConn then
+        antiOwnershipConn:Disconnect()
+        antiOwnershipConn = nil
+    end
 end
 
-print("[NL] 10/12 — Protection загружен")
+print("[NL] 10/13 — Protection загружен (FIX v3)")
 --=========================================================
--- NEVERLOSE UI — 11/12
+-- NEVERLOSE UI — 11/13 (FIX v3)
 -- Вкладки HUD и Config
+-- ФИКСЫ:
+--   • Config save/load корректно работает со SpeedSystem
+--   • Сохраняет бинды Baritone / CTP / Speed / Fly
+--   • Accent color правильно применяет Color3 без багов
+--   • Rainbow отключает accent при выключении
+--   • Auto-load с проверкой на уже загруженный конфиг
+--   • Пресеты и слайдеры синхронизированы (RGB-кэш)
+--   • Save/Load обёрнуты в pcall (не крашится на битом JSON)
+--   • Config корректно применяет значение и перезапускает функции
 --=========================================================
 
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 11: база не загружена")
+    return
+end
+
 --=========================================================
--- HUD
+-- HUD TAB
 --=========================================================
 hudTabContent = makeTabContent("HUD")
-hudLeft  = createColumn(hudTabContent); hudLeft.Position  = UDim2.new(0, 0, 0, 0)
-hudRight = createColumn(hudTabContent); hudRight.Position = UDim2.new(0.5, 8, 0, 0)
+if not hudTabContent then
+    warn("[NL] Часть 11: не удалось создать вкладку HUD")
+    return
+end
 
---========== MENU SIZE ==========
+hudLeft  = createColumn(hudTabContent, "left")
+hudRight = createColumn(hudTabContent, "right")
+
+--=========================================================
+-- MENU SIZE
+--=========================================================
 hudSizeSec = createSection(hudLeft, "Размер интерфейса")
 
 function applyMenuSize(sizeName)
@@ -4551,7 +5788,7 @@ function applyMenuSize(sizeName)
     if MainFrame and MainFrame.Visible then
         tween(MainFrame, 0.25, {
             Size = UDim2.new(0, s.w, 0, s.h),
-            Position = UDim2.new(0.5, -s.w / 2, 0.5, -s.h / 2)
+            Position = UDim2.new(0.5, -s.w / 2, 0.5, -s.h / 2),
         }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
     end
 end
@@ -4581,6 +5818,7 @@ local function makeSizeBtn(text, sizeName)
     b.TextColor3 = NL_TEXT
     b.Font = Enum.Font.GothamBold
     b.TextSize = 11
+    b.AutoButtonColor = false
     b.ZIndex = 55
     b.Parent = sizeBtnRow
 
@@ -4608,7 +5846,9 @@ makeSizeBtn("M", "Medium")
 makeSizeBtn("L", "Large")
 makeSizeBtn("XL", "Huge")
 
---========== BLUR ==========
+--=========================================================
+-- BLUR
+--=========================================================
 hudBlurSec = createSection(hudLeft, "Размытие фона")
 
 createCheckbox(hudBlurSec, "Включить размытие", true, function(v)
@@ -4629,7 +5869,9 @@ createSlider(hudBlurSec, "Интенсивность", 0, 50, 15, function(v)
     end
 end)
 
---========== POSITION ==========
+--=========================================================
+-- POSITION RESET
+--=========================================================
 hudPosSec = createSection(hudLeft, "Расположение")
 
 local hudInfoLbl = Instance.new("TextLabel")
@@ -4657,40 +5899,43 @@ createButton(hudPosSec, "Сбросить позиции", NL_DARKER, function()
     if _G.NL_NotifyOK then _G.NL_NotifyOK("Позиции сброшены") end
 end)
 
---========== ACCENT COLOR ==========
+--=========================================================
+-- ACCENT COLOR
+--=========================================================
 hudColorSec = createSection(hudRight, "Цвет интерфейса")
 
-createSlider(hudColorSec, "Red", 0, 255, 0, function(v)
-    Cfg.Accent = Color3.fromRGB(
-        v,
-        math.floor(Cfg.Accent.G * 255),
-        math.floor(Cfg.Accent.B * 255)
-    )
+-- ✅ RGB-кэш для избежания скачков
+local accentR = math.floor(Cfg.Accent.R * 255)
+local accentG = math.floor(Cfg.Accent.G * 255)
+local accentB = math.floor(Cfg.Accent.B * 255)
+
+createSlider(hudColorSec, "Red", 0, 255, accentR, function(v)
+    accentR = v
+    Cfg.Accent = Color3.fromRGB(accentR, accentG, accentB)
     NL_BLUE = Cfg.Accent
+    if Cfg.Rainbow then Cfg.Rainbow = false end
     updateAllAccents(Cfg.Accent)
 end, true, "R")
 
-createSlider(hudColorSec, "Green", 0, 255, 140, function(v)
-    Cfg.Accent = Color3.fromRGB(
-        math.floor(Cfg.Accent.R * 255),
-        v,
-        math.floor(Cfg.Accent.B * 255)
-    )
+createSlider(hudColorSec, "Green", 0, 255, accentG, function(v)
+    accentG = v
+    Cfg.Accent = Color3.fromRGB(accentR, accentG, accentB)
     NL_BLUE = Cfg.Accent
+    if Cfg.Rainbow then Cfg.Rainbow = false end
     updateAllAccents(Cfg.Accent)
 end, true, "G")
 
-createSlider(hudColorSec, "Blue", 0, 255, 255, function(v)
-    Cfg.Accent = Color3.fromRGB(
-        math.floor(Cfg.Accent.R * 255),
-        math.floor(Cfg.Accent.G * 255),
-        v
-    )
+createSlider(hudColorSec, "Blue", 0, 255, accentB, function(v)
+    accentB = v
+    Cfg.Accent = Color3.fromRGB(accentR, accentG, accentB)
     NL_BLUE = Cfg.Accent
+    if Cfg.Rainbow then Cfg.Rainbow = false end
     updateAllAccents(Cfg.Accent)
 end, true, "B")
 
---========== PRESETS ==========
+--=========================================================
+-- PRESETS
+--=========================================================
 hudPresetsFrame = Instance.new("Frame")
 hudPresetsFrame.Size = UDim2.new(1, 0, 0, 110)
 hudPresetsFrame.BackgroundTransparency = 1
@@ -4728,6 +5973,7 @@ for _, preset in ipairs(ColorPresets) do
     pb.BackgroundColor3 = preset.c
     pb.BorderSizePixel = 0
     pb.Text = ""
+    pb.AutoButtonColor = false
     pb.ZIndex = 55
     pb.Parent = hudPresetsFrame
 
@@ -4738,6 +5984,10 @@ for _, preset in ipairs(ColorPresets) do
     pb.MouseButton1Click:Connect(function()
         Cfg.Accent = preset.c
         NL_BLUE = preset.c
+        accentR = math.floor(preset.c.R * 255)
+        accentG = math.floor(preset.c.G * 255)
+        accentB = math.floor(preset.c.B * 255)
+        if Cfg.Rainbow then Cfg.Rainbow = false end
         updateAllAccents(preset.c)
         if _G.NL_Notify then
             _G.NL_Notify("Цвет: " .. preset.n, preset.c, 2)
@@ -4745,11 +5995,17 @@ for _, preset in ipairs(ColorPresets) do
     end)
 end
 
---========== RAINBOW ==========
+--=========================================================
+-- RAINBOW
+--=========================================================
 hudRainbowSec = createSection(hudRight, "Радуга")
 
 createCheckbox(hudRainbowSec, "Радужный перелив", false, function(v)
     Cfg.Rainbow = v
+    if not v then
+        NL_BLUE = Cfg.Accent
+        updateAllAccents(Cfg.Accent)
+    end
 end, "HUD_Rainbow")
 
 createSlider(hudRainbowSec, "Скорость x100", 10, 500, 100, function(v)
@@ -4766,23 +6022,35 @@ rainbowConn = RunService.Heartbeat:Connect(function(dt)
     if rainbowHue > 1 then rainbowHue = rainbowHue - 1 end
 
     local c = Color3.fromHSV(rainbowHue, 1, 1)
-    Cfg.Accent = c
     NL_BLUE = c
-    for _, el in ipairs(AccentElements) do
-        pcall(function() el.obj[el.prop] = c end)
+
+    for i = #AccentElements, 1, -1 do
+        local el = AccentElements[i]
+        if not el.obj or not el.obj.Parent then
+            table.remove(AccentElements, i)
+        else
+            pcall(function() el.obj[el.prop] = c end)
+        end
     end
 end)
 
 --=========================================================
--- CONFIG
+-- CONFIG TAB
 --=========================================================
 cfgContent = makeTabContent("Config")
-cfgLeft  = createColumn(cfgContent); cfgLeft.Position  = UDim2.new(0, 0, 0, 0)
-cfgRight = createColumn(cfgContent); cfgRight.Position = UDim2.new(0.5, 8, 0, 0)
+if not cfgContent then
+    warn("[NL] Часть 11: не удалось создать вкладку Config")
+    return
+end
+
+cfgLeft  = createColumn(cfgContent, "left")
+cfgRight = createColumn(cfgContent, "right")
 
 CONFIG_FILE = Cfg.SaveFile or "neverlose_config.json"
 
---========== COLLECT ==========
+--=========================================================
+-- COLLECT
+--=========================================================
 function collectConfig()
     local cfg = {}
 
@@ -4802,10 +6070,43 @@ function collectConfig()
         end
     end
 
+    if SpeedSystem then
+        for k, v in pairs(SpeedSystem) do
+            if type(v) == "boolean" or type(v) == "number" or type(v) == "string" then
+                cfg["S_" .. k] = v
+            end
+        end
+    end
+
     if btS then
         for k, v in pairs(btS) do
             if type(v) == "boolean" or type(v) == "number" then
                 cfg["B_" .. k] = v
+            end
+        end
+    end
+
+    if ctpSettings then
+        for k, v in pairs(ctpSettings) do
+            if type(v) == "boolean" or type(v) == "number" then
+                cfg["P_" .. k] = v
+            end
+        end
+    end
+
+    if antiCfg then
+        for k, v in pairs(antiCfg) do
+            if type(v) == "boolean" or type(v) == "number" then
+                cfg["A_" .. k] = v
+            end
+        end
+    end
+
+    -- DOORS (если часть 13 загружена)
+    if DoorsSettings then
+        for k, v in pairs(DoorsSettings) do
+            if type(v) == "boolean" or type(v) == "number" then
+                cfg["D_" .. k] = v
             end
         end
     end
@@ -4818,7 +6119,9 @@ function collectConfig()
     return cfg
 end
 
---========== APPLY ==========
+--=========================================================
+-- APPLY
+--=========================================================
 function applyConfig(cfg)
     if not cfg then return end
 
@@ -4835,26 +6138,38 @@ function applyConfig(cfg)
             Cheat[key] = value
         elseif prefix == "G_" and Cfg[key] ~= nil then
             Cfg[key] = value
+        elseif prefix == "S_" and SpeedSystem and SpeedSystem[key] ~= nil then
+            SpeedSystem[key] = value
         elseif prefix == "B_" and btS and btS[key] ~= nil then
             btS[key] = value
+        elseif prefix == "P_" and ctpSettings and ctpSettings[key] ~= nil then
+            ctpSettings[key] = value
+        elseif prefix == "A_" and antiCfg and antiCfg[key] ~= nil then
+            antiCfg[key] = value
+        elseif prefix == "D_" and DoorsSettings and DoorsSettings[key] ~= nil then
+            DoorsSettings[key] = value
         end
     end
 
-    if Cheat.Fly then enableFly() end
-    if Cheat.Noclip then enableNoclip() end
-    if Cheat.Speed then applySpeed() end
-    if Cheat.BunnyHop then enableBunnyHop() end
-    if Cheat.SpinBot then enableSpinBot() end
-    if Cheat.Spider then enableSpider() end
-    if Cheat.InfJump then enableInfJump() end
-    if Cheat.FullBright then enableFullBright() end
-    if Cheat.BlackSky then enableBlackSky() end
-    if Cheat.Snow then enableSnow() end
-    if Cheat.Fog then enableFog() end
-    if Cheat.WorldColorEnabled then applyWorldColor() end
-    if Cheat.AutoClicker then startAutoClicker() end
+    -- Перезапуск функций, которые включены
+    if Cheat.Fly and enableFly then enableFly() end
+    if Cheat.Noclip and enableNoclip then enableNoclip() end
+    if Cheat.Speed and enableSpeed then
+        if SpeedSystem.Enabled then speedStop() end
+        enableSpeed()
+    end
+    if Cheat.BunnyHop and enableBunnyHop then enableBunnyHop() end
+    if Cheat.SpinBot and enableSpinBot then enableSpinBot() end
+    if Cheat.Spider and enableSpider then enableSpider() end
+    if Cheat.InfJump and enableInfJump then enableInfJump() end
+    if Cheat.FullBright and enableFullBright then enableFullBright() end
+    if Cheat.BlackSky and enableBlackSky then enableBlackSky() end
+    if Cheat.Snow and enableSnow then enableSnow() end
+    if Cheat.Fog and enableFog then enableFog() end
+    if Cheat.WorldColorEnabled and applyWorldColor then applyWorldColor() end
+    if Cheat.AutoClicker and startAutoClicker then startAutoClicker() end
     if Cheat.Hat and _G.NL_CreateHat then _G.NL_CreateHat() end
-    if Cheat.Jump then applyJump() end
+    if Cheat.Jump and applyJump then applyJump() end
 
     if Cheat.AntiFling and enableAntiFling then enableAntiFling() end
     if Cheat.AntiKnockback and enableAntiKnockback then enableAntiKnockback() end
@@ -4871,7 +6186,9 @@ function applyConfig(cfg)
     end
 end
 
---========== SAVE ==========
+--=========================================================
+-- SAVE
+--=========================================================
 function saveConfig(fileName)
     if not hasFileAPI() then
         if _G.NL_NotifyErr then _G.NL_NotifyErr("writefile недоступен") end
@@ -4896,7 +6213,9 @@ function saveConfig(fileName)
     return false
 end
 
---========== LOAD ==========
+--=========================================================
+-- LOAD
+--=========================================================
 function loadConfig(fileName)
     if not hasFileAPI() then
         if _G.NL_NotifyErr then _G.NL_NotifyErr("readfile недоступен") end
@@ -4927,7 +6246,9 @@ function loadConfig(fileName)
     return true
 end
 
---========== DELETE ==========
+--=========================================================
+-- DELETE
+--=========================================================
 function deleteConfig(fileName)
     if not hasFileAPI() then
         if _G.NL_NotifyErr then _G.NL_NotifyErr("Нет доступа к файлам") end
@@ -4948,7 +6269,9 @@ _G.NL_SaveConfig   = saveConfig
 _G.NL_LoadConfig   = loadConfig
 _G.NL_DeleteConfig = deleteConfig
 
---========== CONFIG UI ==========
+--=========================================================
+-- CONFIG UI
+--=========================================================
 cfgSaveSec = createSection(cfgLeft, "Сохранить / Загрузить")
 
 cfgNameBox = Instance.new("TextBox")
@@ -4999,6 +6322,7 @@ delCfgBtn.Text = "Удалить конфиг"
 delCfgBtn.TextColor3 = NL_RED
 delCfgBtn.Font = Enum.Font.Gotham
 delCfgBtn.TextSize = 12
+delCfgBtn.AutoButtonColor = false
 delCfgBtn.ZIndex = 55
 delCfgBtn.Parent = cfgSaveSec
 
@@ -5023,13 +6347,15 @@ cfgInfo.TextYAlignment = Enum.TextYAlignment.Top
 cfgInfo.ZIndex = 55
 cfgInfo.Parent = cfgSaveSec
 
---========== INFO ==========
+--=========================================================
+-- CONFIG INFO
+--=========================================================
 cfgInfoSec = createSection(cfgRight, "Информация")
 
 local cfgInfoLabel = Instance.new("TextLabel")
-cfgInfoLabel.Size = UDim2.new(1, 0, 0, 180)
+cfgInfoLabel.Size = UDim2.new(1, 0, 0, 240)
 cfgInfoLabel.BackgroundTransparency = 1
-cfgInfoLabel.Text = "Config сохраняет:\n• Все вкл/выкл функции\n• Слайдеры (скорости, силы, цвета)\n• Цвета (ESP, World, Fog, Accent)\n• Размер меню\n• Бинды клавиш\n• Настройки Baritone\n\nАвтозагрузка: если файл\n'neverlose_config.json' есть,\nон загрузится через 12 сек."
+cfgInfoLabel.Text = "Config сохраняет:\n• Все вкл/выкл функции\n• Слайдеры (скорости, силы, цвета)\n• Speed System (режим + значения)\n• Цвета (ESP, World, Fog, Accent)\n• Размер меню\n• Бинды клавиш\n• Настройки Baritone\n• Настройки Cursor TP\n• Настройки Protection\n• Настройки DOORS\n\nАвтозагрузка: если файл\n'neverlose_config.json' есть,\nон загрузится через 12 сек."
 cfgInfoLabel.TextColor3 = NL_DIM
 cfgInfoLabel.Font = Enum.Font.Gotham
 cfgInfoLabel.TextSize = 11
@@ -5039,7 +6365,9 @@ cfgInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
 cfgInfoLabel.ZIndex = 55
 cfgInfoLabel.Parent = cfgInfoSec
 
---========== API CHECK ==========
+--=========================================================
+-- API CHECK
+--=========================================================
 cfgHelpSec = createSection(cfgRight, "Проверка API")
 
 local cfgApiLabel = Instance.new("TextLabel")
@@ -5059,7 +6387,9 @@ cfgApiLabel.TextXAlignment = Enum.TextXAlignment.Left
 cfgApiLabel.ZIndex = 55
 cfgApiLabel.Parent = cfgHelpSec
 
---========== AUTO LOAD ==========
+--=========================================================
+-- AUTO LOAD (через 12 сек)
+--=========================================================
 task.spawn(function()
     task.wait(12)
     if not _G.NeverloseUILoaded then return end
@@ -5070,18 +6400,48 @@ task.spawn(function()
     end
 end)
 
---========== UNLOAD ==========
-_G.NL_UnloadHUD = function()
-    if rainbowConn then rainbowConn:Disconnect() end
+--=========================================================
+-- UNLOAD HOOK
+--=========================================================
+local _prevUnload11 = _G.NL_UnloadBase
+_G.NL_UnloadBase = function()
+    if rainbowConn then
+        rainbowConn:Disconnect()
+        rainbowConn = nil
+    end
+    if _prevUnload11 then _prevUnload11() end
 end
 
-print("[NL] 11/12 — HUD + Config загружены")
+_G.NL_UnloadHUD = function()
+    if rainbowConn then
+        rainbowConn:Disconnect()
+        rainbowConn = nil
+    end
+end
+
+print("[NL] 11/13 — HUD + Config загружены (FIX v3)")
 --=========================================================
--- NEVERLOSE UI — 12/12
--- Fling + финальная сборка
+-- NEVERLOSE UI — 12/13 (FIX v3)
+-- Fling + Active List + финальная сборка
+-- ФИКСЫ:
+--   • Не дублируем unloadBtn.MouseButton1Click (уже есть в ч.3)
+--   • _G.NL_UnloadComplete определён один раз и корректно сцеплен
+--   • Fling не конфликтует со SpeedSystem
+--   • TP+Fling использует antiHold-подобный lockSelf с токеном
+--   • Active List обновляется только при изменениях (сигнатура)
+--   • Hotkeys (RShift / RCtrl) не конфликтуют с биндами юзера
+--   • Уведомления через _G.NL_Notify
+--   • Автофлинг троттлится 10 Hz
 --=========================================================
 
---========== FLING STATE ==========
+if not _G.NeverloseUILoaded then
+    warn("[NL] Часть 12: база не загружена")
+    return
+end
+
+--=========================================================
+-- FLING STATE
+--=========================================================
 flingPower = 50000
 flingEnabled = false
 autoFlingEnabled = false
@@ -5089,11 +6449,12 @@ autoFlingRange = 20
 tpFlingEnabled = false
 protectSelf = true
 
---========== SELF PROTECTION ==========
-selfProtectConn = nil
+--=========================================================
+-- SELF PROTECTION (token-based)
+--=========================================================
 selfProtectToken = 0
 
-function lockSelf()
+function lockSelf(duration)
     if not protectSelf then return end
     local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if not myHRP then return end
@@ -5103,7 +6464,7 @@ function lockSelf()
 
     pcall(function() myHRP.Anchored = true end)
 
-    task.delay(0.5, function()
+    task.delay(duration or 0.5, function()
         if selfProtectToken ~= myToken then return end
         if myHRP and myHRP.Parent then
             pcall(function() myHRP.Anchored = false end)
@@ -5119,7 +6480,9 @@ function unlockSelf()
     end
 end
 
---========== DO FLING ==========
+--=========================================================
+-- DO FLING
+--=========================================================
 function doFling(char)
     if not char then return end
     if not _G.NeverloseUILoaded then return end
@@ -5162,7 +6525,9 @@ function doFling(char)
     end)
 end
 
---========== TP + FLING ==========
+--=========================================================
+-- TP + FLING
+--=========================================================
 function tpFling(plr)
     if not _G.NeverloseUILoaded then return end
     if not plr or plr == LP then return end
@@ -5175,6 +6540,7 @@ function tpFling(plr)
     local tHRP = tChar and tChar:FindFirstChild("HumanoidRootPart")
     if not tHRP then return end
 
+    -- Отключаем коллизию на себе
     if protectSelf then
         for _, p in ipairs(myChar:GetDescendants()) do
             if p:IsA("BasePart") then
@@ -5183,7 +6549,7 @@ function tpFling(plr)
         end
     end
 
-    lockSelf()
+    lockSelf(0.5)
 
     local offset = tHRP.CFrame.RightVector * 3
     pcall(function()
@@ -5199,6 +6565,7 @@ function tpFling(plr)
     task.wait(0.3)
     unlockSelf()
 
+    -- Возвращаем коллизию через 0.2 сек
     if protectSelf then
         task.wait(0.2)
         for _, p in ipairs(myChar:GetDescendants()) do
@@ -5209,14 +6576,16 @@ function tpFling(plr)
     end
 end
 
---========== RIGHT CLICK ==========
-UIS.InputBegan:Connect(function(input, gp)
+--=========================================================
+-- RIGHT CLICK -> TP FLING
+--=========================================================
+tpFlingConn = UIS.InputBegan:Connect(function(input, gp)
     if gp then return end
     if not _G.NeverloseUILoaded then return end
     if not tpFlingEnabled then return end
     if input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
 
-    local mouse = LP:GetMouse()
+    local mouse = Mouse or LP:GetMouse()
     if not mouse then return end
     local target = mouse.Target
     if not target then return end
@@ -5233,7 +6602,9 @@ UIS.InputBegan:Connect(function(input, gp)
     end
 end)
 
---========== AUTO FLING ==========
+--=========================================================
+-- AUTO FLING LOOP (throttle 10 Hz)
+--=========================================================
 task.spawn(function()
     while _G.NeverloseUILoaded do
         task.wait(0.1)
@@ -5254,10 +6625,17 @@ task.spawn(function()
     end
 end)
 
---========== FLING TAB ==========
+--=========================================================
+-- FLING TAB
+--=========================================================
 flingTab = makeTabContent("Fling")
-flingCol1 = createColumn(flingTab); flingCol1.Position = UDim2.new(0, 0, 0, 0)
-flingCol2 = createColumn(flingTab); flingCol2.Position = UDim2.new(0.5, 8, 0, 0)
+if not flingTab then
+    warn("[NL] Часть 12: не удалось создать вкладку Fling")
+    return
+end
+
+flingCol1 = createColumn(flingTab, "left")
+flingCol2 = createColumn(flingTab, "right")
 
 --========== FLING SECTION ==========
 flingSec1 = createSection(flingCol1, "Fling")
@@ -5269,8 +6647,10 @@ end, "FL_En")
 createCheckbox(flingSec1, "Автофлинг в радиусе", false, function(s)
     autoFlingEnabled = s
     if _G.NL_Notify then
-        _G.NL_Notify(s and "Автофлинг ВКЛ" or "Автофлинг ВЫКЛ",
-            s and NL_GREEN or NL_RED, 2)
+        _G.NL_Notify(
+            s and "Автофлинг ВКЛ" or "Автофлинг ВЫКЛ",
+            s and NL_GREEN or NL_RED, 2
+        )
     end
 end, "FL_Auto")
 
@@ -5294,6 +6674,7 @@ flingAllBtn.Text = "ВЫБРОСИТЬ ВСЕХ РЯДОМ"
 flingAllBtn.TextColor3 = NL_WHITE
 flingAllBtn.Font = Enum.Font.GothamBold
 flingAllBtn.TextSize = 12
+flingAllBtn.AutoButtonColor = false
 flingAllBtn.ZIndex = 55
 flingAllBtn.Parent = flingSec1
 
@@ -5305,7 +6686,7 @@ flingAllBtn.MouseButton1Click:Connect(function()
     local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if not myHRP then return end
 
-    lockSelf()
+    lockSelf(0.5)
     local count = 0
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP then
@@ -5331,15 +6712,17 @@ flingSec2 = createSection(flingCol2, "TP + Fling")
 createCheckbox(flingSec2, "TP+Флинг по ПКМ", false, function(s)
     tpFlingEnabled = s
     if _G.NL_Notify then
-        _G.NL_Notify(s and "ПКМ — флинг" or "ПКМ отключён",
-            s and NL_GREEN or NL_DIM, 2)
+        _G.NL_Notify(
+            s and "ПКМ — флинг" or "ПКМ отключён",
+            s and NL_GREEN or NL_DIM, 2
+        )
     end
 end, "FL_Tp")
 
 local flingInfo = Instance.new("TextLabel")
-flingInfo.Size = UDim2.new(1, 0, 0, 100)
+flingInfo.Size = UDim2.new(1, 0, 0, 110)
 flingInfo.BackgroundTransparency = 1
-flingInfo.Text = "Наведи на игрока → ПКМ → он улетит.\n\nТы НЕ улетишь, потому что:\n• Заморозка на 0.5 сек\n• Телепорт рядом, не внутрь\n• Коллизия выключена на время"
+flingInfo.Text = "Наведи на игрока → ПКМ → он улетит.\n\nТы НЕ улетишь, потому что:\n• Заморозка на 0.5 сек\n• Телепорт рядом, не внутрь\n• Коллизия выключена на время\n• Anti-Fling вернёт тебя"
 flingInfo.TextColor3 = NL_DIM
 flingInfo.Font = Enum.Font.Gotham
 flingInfo.TextSize = 11
@@ -5358,6 +6741,7 @@ flingList.BackgroundTransparency = 1
 flingList.BorderSizePixel = 0
 flingList.ScrollBarThickness = 4
 flingList.ScrollBarImageColor3 = NL_RED
+flingList.ScrollBarImageTransparency = 0.3
 flingList.CanvasSize = UDim2.new(0, 0, 0, 0)
 flingList.AutomaticCanvasSize = Enum.AutomaticSize.Y
 flingList.ZIndex = 54
@@ -5366,6 +6750,7 @@ registerAccent(flingList, "ScrollBarImageColor3")
 
 local fl = Instance.new("UIListLayout")
 fl.Padding = UDim.new(0, 4)
+fl.SortOrder = Enum.SortOrder.LayoutOrder
 fl.Parent = flingList
 
 flingEntries = {}
@@ -5385,6 +6770,8 @@ function makeFlingEntry(plr)
     b.Font = Enum.Font.Gotham
     b.TextSize = 11
     b.TextXAlignment = Enum.TextXAlignment.Left
+    b.TextTruncate = Enum.TextTruncate.AtEnd
+    b.AutoButtonColor = false
     b.ZIndex = 55
     b.Parent = flingList
 
@@ -5424,64 +6811,44 @@ refreshFlingList()
 
 Players.PlayerAdded:Connect(function()
     task.wait(0.5)
-    refreshFlingList()
-end)
-Players.PlayerRemoving:Connect(function()
-    task.wait(0.1)
+    if not _G.NeverloseUILoaded then return end
     refreshFlingList()
 end)
 
---========== UNLOAD ==========
+Players.PlayerRemoving:Connect(function(plr)
+    if flingEntries[plr] then
+        if flingEntries[plr].Parent then flingEntries[plr]:Destroy() end
+        flingEntries[plr] = nil
+    end
+end)
+
+--=========================================================
+-- UNLOAD FLING
+--=========================================================
 _G.NL_UnloadFling = function()
     flingEnabled = false
     autoFlingEnabled = false
     tpFlingEnabled = false
     unlockSelf()
+
+    if tpFlingConn then
+        tpFlingConn:Disconnect()
+        tpFlingConn = nil
+    end
+
+    for _, e in pairs(flingEntries) do
+        if e and e.Parent then e:Destroy() end
+    end
+    flingEntries = {}
+
+    for _, act in ipairs({"FL_En", "FL_Auto", "FL_Protect", "FL_Tp"}) do
+        BindCallbacks[act] = nil
+    end
 end
 
 --=========================================================
--- ФИНАЛЬНАЯ СБОРКА
+-- ACTIVE LIST
 --=========================================================
-
---========== UNLOAD COMPOSITE ==========
-local _baseUnload = unloadScript
-unloadScript = function()
-    if _G.NL_UnloadHUD then pcall(_G.NL_UnloadHUD) end
-    if _G.NL_UnloadFling then pcall(_G.NL_UnloadFling) end
-    if _G.NL_UnloadProtect then pcall(_G.NL_UnloadProtect) end
-    if _G.NL_UnloadBT then pcall(_G.NL_UnloadBT) end
-    if _G.NL_UnloadTP then pcall(_G.NL_UnloadTP) end
-    if _G.NL_UnloadCTP then pcall(_G.NL_UnloadCTP) end
-    if _baseUnload then pcall(_baseUnload) end
-end
-
---========== HOTKEYS ==========
-UIS.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if not _G.NeverloseUILoaded then return end
-
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        autoFlingEnabled = not autoFlingEnabled
-        if _G.NL_Notify then
-            _G.NL_Notify(
-                "Автофлинг: " .. (autoFlingEnabled and "ON" or "OFF"),
-                autoFlingEnabled and NL_GREEN or NL_RED, 2
-            )
-        end
-    end
-
-    if input.KeyCode == Enum.KeyCode.RightControl then
-        tpFlingEnabled = not tpFlingEnabled
-        if _G.NL_Notify then
-            _G.NL_Notify(
-                "ПКМ-Флинг: " .. (tpFlingEnabled and "ON" or "OFF"),
-                tpFlingEnabled and NL_GREEN or NL_RED, 2
-            )
-        end
-    end
-end)
-
---========== ACTIVE LIST ==========
 ActiveListFrame = Instance.new("Frame")
 ActiveListFrame.Name = "NL_ActiveList"
 ActiveListFrame.Size = UDim2.new(0, 200, 0, 300)
@@ -5527,9 +6894,10 @@ ALList.Parent = ActiveListFrame
 
 local ALLayout = Instance.new("UIListLayout")
 ALLayout.Padding = UDim.new(0, 2)
+ALLayout.SortOrder = Enum.SortOrder.LayoutOrder
 ALLayout.Parent = ALList
 
-function AL_MakeLabel(text)
+function AL_MakeLabel(text, order)
     local l = Instance.new("TextLabel")
     l.Size = UDim2.new(1, 0, 0, 14)
     l.BackgroundTransparency = 1
@@ -5538,6 +6906,7 @@ function AL_MakeLabel(text)
     l.Font = Enum.Font.Gotham
     l.TextSize = 11
     l.TextXAlignment = Enum.TextXAlignment.Left
+    l.LayoutOrder = order or 0
     l.ZIndex = 202
     l.Parent = ALList
     return l
@@ -5548,7 +6917,10 @@ function AL_GetActive()
     if Cheat.ESP then table.insert(list, "ESP") end
     if Cheat.Fly then table.insert(list, "Fly") end
     if Cheat.Noclip then table.insert(list, "Noclip") end
-    if Cheat.Speed then table.insert(list, "Speed") end
+    if Cheat.Speed then
+        local mode = SpeedSystem and SpeedSystem.Mode or "Speed"
+        table.insert(list, "Speed [" .. mode .. "]")
+    end
     if Cheat.BunnyHop then table.insert(list, "BunnyHop") end
     if Cheat.SpinBot then table.insert(list, "SpinBot") end
     if Cheat.Spider then table.insert(list, "Spider") end
@@ -5565,34 +6937,98 @@ function AL_GetActive()
     if Cheat.AntiKnockback then table.insert(list, "Anti-KB") end
     if Cheat.AntiRagdoll then table.insert(list, "Anti-Ragdoll") end
     if btS and btS.running then table.insert(list, "Baritone") end
+    if flingEnabled then table.insert(list, "Fling") end
     if autoFlingEnabled then table.insert(list, "Auto-Fling") end
     if tpFlingEnabled then table.insert(list, "ПКМ-Флинг") end
+    if DoorsSettings then
+        if DoorsSettings.DoorESP then table.insert(list, "DOORS: Door") end
+        if DoorsSettings.EntityESP then table.insert(list, "DOORS: Entity") end
+        if DoorsSettings.ItemESP then table.insert(list, "DOORS: Item") end
+        if DoorsSettings.Fullbright then table.insert(list, "DOORS: FB") end
+    end
     return list
 end
 
 AL_Labels = {}
-AL_LastCount = -1
+AL_LastSignature = ""
 
 task.spawn(function()
     while _G.NeverloseUILoaded do
-        task.wait(0.5)
+        task.wait(0.4)
         if not ActiveListFrame or not ActiveListFrame.Parent then break end
+
         local active = AL_GetActive()
-        if #active ~= AL_LastCount then
-            AL_LastCount = #active
+        local sig = table.concat(active, "|")
+        if sig ~= AL_LastSignature then
+            AL_LastSignature = sig
             for _, l in ipairs(AL_Labels) do
                 if l and l.Parent then l:Destroy() end
             end
             AL_Labels = {}
-            for _, name in ipairs(active) do
-                table.insert(AL_Labels, AL_MakeLabel(name))
+            for i, name in ipairs(active) do
+                table.insert(AL_Labels, AL_MakeLabel(name, i))
             end
             ActiveListFrame.Visible = #active > 0
         end
     end
 end)
 
---========== FINAL CHECK ==========
+--=========================================================
+-- HOTKEYS (RShift / RCtrl)
+--=========================================================
+hotkeyConn = UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if not _G.NeverloseUILoaded then return end
+
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        autoFlingEnabled = not autoFlingEnabled
+        if _G.NL_Notify then
+            _G.NL_Notify(
+                "Автофлинг: " .. (autoFlingEnabled and "ON" or "OFF"),
+                autoFlingEnabled and NL_GREEN or NL_RED, 2
+            )
+        end
+    end
+
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        tpFlingEnabled = not tpFlingEnabled
+        if _G.NL_Notify then
+            _G.NL_Notify(
+                "ПКМ-Флинг: " .. (tpFlingEnabled and "ON" or "OFF"),
+                tpFlingEnabled and NL_GREEN or NL_RED, 2
+            )
+        end
+    end
+end)
+
+--=========================================================
+-- FINAL UNLOAD COMPOSITE
+--=========================================================
+-- ✅ Единственное определение _G.NL_UnloadComplete
+-- _G.NL_UnloadBase — базовая цепочка (части 3, 7, 8, 9, 11)
+_G.NL_UnloadComplete = function()
+    if _G.NL_UnloadDoors   then pcall(_G.NL_UnloadDoors)   end
+    if _G.NL_UnloadFling   then pcall(_G.NL_UnloadFling)   end
+    if _G.NL_UnloadProtect then pcall(_G.NL_UnloadProtect) end
+    if _G.NL_UnloadBT      then pcall(_G.NL_UnloadBT)      end
+    if _G.NL_UnloadTP      then pcall(_G.NL_UnloadTP)      end
+    if _G.NL_UnloadCTP     then pcall(_G.NL_UnloadCTP)     end
+    if _G.NL_UnloadHUD     then pcall(_G.NL_UnloadHUD)     end
+
+    if hotkeyConn then
+        hotkeyConn:Disconnect()
+        hotkeyConn = nil
+    end
+    if ActiveListFrame and ActiveListFrame.Parent then
+        ActiveListFrame:Destroy()
+    end
+
+    if _G.NL_UnloadBase then pcall(_G.NL_UnloadBase) end
+end
+
+--=========================================================
+-- FINAL CHECK (через 14 сек)
+--=========================================================
 task.spawn(function()
     task.wait(14)
     if not _G.NeverloseUILoaded then return end
@@ -5600,7 +7036,7 @@ task.spawn(function()
     local missing = {}
     local required = {
         "Visuals", "Misc", "Teleport", "Cursor TP",
-        "Baritone", "Fling", "HUD", "Config", "Settings"
+        "Baritone", "Fling", "HUD", "Config", "Settings",
     }
     for _, name in ipairs(required) do
         if not tabs[name] then
@@ -5622,16 +7058,23 @@ task.spawn(function()
     print("  gethui:", type(gethui))
 end)
 
---========== FINAL PRINT ==========
+--=========================================================
+-- FINAL PRINT
+--=========================================================
 print("")
 print("========================================")
-print("   NEVERLOSE UI — 12/12 ЗАГРУЖЕНО")
-print("   XENO EDITION")
+print("   NEVERLOSE UI — 12/13 ЗАГРУЖЕНО")
+print("   XENO EDITION (FIX v3)")
 print("========================================")
 print("  INSERT        - меню")
 print("  RightShift    - автофлинг вкл/выкл")
 print("  RightControl  - ПКМ-флинг вкл/выкл")
 print("  ПКМ           - флинг цели")
+print("")
+print("  SPEED MODES:")
+print("   Regular - WalkSpeed (простой)")
+print("   Matrix  - CFrame TP (тихий, обход)")
+print("   Hybrid  - WalkSpeed + CFrame (баланс)")
 print("")
 print("  ВКЛАДКИ (9):")
 print("   Visuals     - ESP, FullBright, BlackSky,")
@@ -5647,4 +7090,435 @@ print("   Config      - save / load")
 print("   Settings    - Unload")
 print("")
 print("  Версия: " .. Cfg.Version .. " | " .. os.date("%Y-%m-%d %H:%M"))
+print("========================================")
+--=========================================================
+-- [DOORS] Standalone NL integration — v5 (DEBUG + TOP TAB)
+--=========================================================
+print("========================================")
+print("[DOORS] Loading...")
+
+--========== ПРОВЕРКА NL ==========
+if not _G.NeverloseUILoaded and not NeverloseUILoaded then
+    warn("[DOORS] NL НЕ ЗАГРУЖЕН. Сначала запусти части 1-12!")
+    return
+end
+
+print("[DOORS] NL найден ✓")
+
+--========== ПОЛУЧАЕМ NL API (ищем везде) ==========
+local _tabs           = _G.tabs           or tabs
+local _createTab      = _G.createTab      or createTab
+local _makeTabContent = _G.makeTabContent or makeTabContent
+local _createColumn   = _G.createColumn   or createColumn
+local _createSection  = _G.createSection  or createSection
+local _createCheckbox = _G.createCheckbox or createCheckbox
+local _createButton   = _G.createButton   or createButton
+
+print("[DOORS] API check:")
+print("  tabs:          ", type(_tabs))
+print("  createTab:     ", type(_createTab))
+print("  makeTabContent:", type(_makeTabContent))
+print("  createColumn:  ", type(_createColumn))
+print("  createSection: ", type(_createSection))
+print("  createCheckbox:", type(_createCheckbox))
+print("  createButton:  ", type(_createButton))
+
+if type(_tabs) ~= "table" then
+    warn("[DOORS] FATAL: tabs не таблица. Убедись что часть 1 запущена ПЕРЕД частью 13.")
+    return
+end
+
+if type(_createTab) ~= "function" then
+    warn("[DOORS] FATAL: createTab не функция.")
+    return
+end
+
+--========== ЦВЕТА ==========
+local C_BLUE   = _G.NL_BLUE   or Color3.fromRGB(0, 140, 255)
+local C_DARKER = _G.NL_DARKER or Color3.fromRGB(10, 10, 14)
+local C_TEXT   = _G.NL_TEXT   or Color3.fromRGB(230, 230, 235)
+local C_DIM    = _G.NL_DIM    or Color3.fromRGB(140, 140, 150)
+local C_GREEN  = _G.NL_GREEN  or Color3.fromRGB(50, 200, 100)
+
+--========== СОЗДАЁМ ВКЛАДКУ ==========
+print("[DOORS] Создаю вкладку 'DOORS'...")
+
+local okTab, errTab = pcall(function()
+    if not _tabs["DOORS"] then
+        _createTab("DOORS")
+    end
+end)
+
+if not okTab then
+    warn("[DOORS] createTab упал:", errTab)
+    return
+end
+
+print("[DOORS] tabs['DOORS'] =", tostring(_tabs["DOORS"]))
+
+-- Переставляем вкладку В САМЫЙ ВЕРХ (LayoutOrder = 0)
+if _tabs["DOORS"] and _tabs["DOORS"].btn then
+    pcall(function()
+        _tabs["DOORS"].btn.LayoutOrder = 0
+    end)
+    print("[DOORS] LayoutOrder = 0 (вкладка поднята наверх)")
+end
+
+--========== КОНТЕНТ ВКЛАДКИ ==========
+local doorsContent = _makeTabContent("DOORS")
+if not doorsContent then
+    warn("[DOORS] makeTabContent вернул nil")
+    return
+end
+
+print("[DOORS] Контент вкладки создан")
+
+local doorsLeft  = _createColumn(doorsContent, "left")
+local doorsRight = _createColumn(doorsContent, "right")
+
+print("[DOORS] Колонки созданы")
+
+--========== НАСТРОЙКИ ==========
+local DL_Lighting   = game:GetService("Lighting")
+local DL_Players    = game:GetService("Players")
+local DL_LP         = DL_Players.LocalPlayer
+
+local Settings = {
+    DoorESP    = false,
+    EntityESP  = false,
+    ItemESP    = false,
+    ClosetESP  = false,
+    ChestESP   = false,
+    GoldESP    = false,
+    Fullbright = false,
+}
+
+local ESPCache = {
+    Door = {}, Entity = {}, Item = {},
+    Closet = {}, Chest = {}, Gold = {},
+}
+
+local DefaultLighting = {
+    Brightness     = DL_Lighting.Brightness,
+    ClockTime      = DL_Lighting.ClockTime,
+    FogEnd         = DL_Lighting.FogEnd,
+    GlobalShadows  = DL_Lighting.GlobalShadows,
+    Ambient        = DL_Lighting.Ambient,
+    OutdoorAmbient = DL_Lighting.OutdoorAmbient,
+}
+
+local DoorsRunning = true
+
+--========== ХЕЛПЕРЫ ==========
+local function GetDistance(part)
+    local myChar = DL_LP.Character
+    local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if myHRP and part and part.Parent then
+        return math.floor((myHRP.Position - part.Position).Magnitude / 3.57)
+    end
+    return 0
+end
+
+local function ApplyESP(obj, text, color)
+    if not obj or not obj.Parent then return end
+
+    local hl = obj:FindFirstChild("OptHL")
+    if not hl then
+        hl = Instance.new("Highlight")
+        hl.Name = "OptHL"
+        hl.FillColor = color
+        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+        hl.FillTransparency = 0.5
+        hl.OutlineTransparency = 0
+        hl.Adornee = obj
+        hl.Parent = obj
+    else
+        if hl.FillColor ~= color then hl.FillColor = color end
+    end
+
+    local bb = obj:FindFirstChild("OptBB")
+    if not bb then
+        local adorneePart = obj:IsA("BasePart") and obj
+            or obj.PrimaryPart
+            or obj:FindFirstChildWhichIsA("BasePart")
+        if adorneePart then
+            bb = Instance.new("BillboardGui")
+            bb.Name = "OptBB"
+            bb.AlwaysOnTop = true
+            bb.Size = UDim2.new(0, 140, 0, 25)
+            bb.StudsOffset = Vector3.new(0, 2, 0)
+            bb.Adornee = adorneePart
+
+            local lbl = Instance.new("TextLabel")
+            lbl.Name = "Txt"
+            lbl.Size = UDim2.new(1, 0, 1, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.TextColor3 = color
+            lbl.TextStrokeTransparency = 0
+            lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+            lbl.Font = Enum.Font.SourceSansBold
+            lbl.TextSize = 13
+            lbl.Text = text
+            lbl.Parent = bb
+
+            bb.Parent = obj
+        end
+    end
+end
+
+local function RemoveESP(obj)
+    if not obj then return end
+    local hl = obj:FindFirstChild("OptHL")
+    if hl then hl:Destroy() end
+    local bb = obj:FindFirstChild("OptBB")
+    if bb then bb:Destroy() end
+end
+
+--========== UI: ESP ==========
+print("[DOORS] Строю UI...")
+
+local secESP = _createSection(doorsLeft, "ESP")
+
+_createCheckbox(secESP, "Door ESP",   false, function(s) Settings.DoorESP   = s end)
+_createCheckbox(secESP, "Entity ESP", false, function(s) Settings.EntityESP = s end)
+_createCheckbox(secESP, "Item ESP",   false, function(s) Settings.ItemESP   = s end)
+_createCheckbox(secESP, "Closet ESP", false, function(s) Settings.ClosetESP = s end)
+_createCheckbox(secESP, "Chest ESP",  false, function(s) Settings.ChestESP  = s end)
+_createCheckbox(secESP, "Gold ESP",   false, function(s) Settings.GoldESP   = s end)
+
+--========== UI: WORLD ==========
+local secWorld = _createSection(doorsLeft, "World")
+
+_createCheckbox(secWorld, "Fullbright", false, function(s)
+    Settings.Fullbright = s
+    if not s then
+        pcall(function()
+            DL_Lighting.Brightness     = DefaultLighting.Brightness
+            DL_Lighting.ClockTime      = DefaultLighting.ClockTime
+            DL_Lighting.FogEnd         = DefaultLighting.FogEnd
+            DL_Lighting.GlobalShadows  = DefaultLighting.GlobalShadows
+            DL_Lighting.Ambient        = DefaultLighting.Ambient
+            DL_Lighting.OutdoorAmbient = DefaultLighting.OutdoorAmbient
+        end)
+    end
+end)
+
+--========== UI: СТАТУС ==========
+local secStatus = _createSection(doorsRight, "Статус")
+
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Size = UDim2.new(1, 0, 0, 130)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Text = "Сканирование..."
+statusLbl.TextColor3 = C_DIM
+statusLbl.Font = Enum.Font.Gotham
+statusLbl.TextSize = 11
+statusLbl.TextWrapped = true
+statusLbl.TextYAlignment = Enum.TextYAlignment.Top
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+statusLbl.ZIndex = 55
+statusLbl.Parent = secStatus
+
+local function updateStatus()
+    local hasRooms = workspace:FindFirstChild("CurrentRooms") and true or false
+    local total = 0
+    for _, cat in pairs(ESPCache) do total = total + #cat end
+
+    statusLbl.Text = string.format(
+        "PlaceId: %s\nCurrentRooms: %s\nВсего: %d\n\nДвери: %d\nМонстры: %d\nПредметы: %d\nШкафы: %d\nСундуки: %d\nЗолото: %d",
+        tostring(game.PlaceId),
+        hasRooms and "✓" or "✗",
+        total,
+        #ESPCache.Door,
+        #ESPCache.Entity,
+        #ESPCache.Item,
+        #ESPCache.Closet,
+        #ESPCache.Chest,
+        #ESPCache.Gold
+    )
+    statusLbl.TextColor3 = hasRooms and C_GREEN or C_DIM
+end
+
+--========== UI: ДЕЙСТВИЯ ==========
+local secAct = _createSection(doorsRight, "Действия")
+
+_createButton(secAct, "Выключить всё", C_DARKER, function()
+    for k in pairs(Settings) do
+        if type(Settings[k]) == "boolean" then Settings[k] = false end
+    end
+    for _, cat in pairs(ESPCache) do
+        for _, item in ipairs(cat) do
+            if item.obj then pcall(function() RemoveESP(item.obj) end) end
+        end
+    end
+    pcall(function()
+        DL_Lighting.Brightness     = DefaultLighting.Brightness
+        DL_Lighting.ClockTime      = DefaultLighting.ClockTime
+        DL_Lighting.FogEnd         = DefaultLighting.FogEnd
+        DL_Lighting.GlobalShadows  = DefaultLighting.GlobalShadows
+        DL_Lighting.Ambient        = DefaultLighting.Ambient
+        DL_Lighting.OutdoorAmbient = DefaultLighting.OutdoorAmbient
+    end)
+    if _G.NL_NotifyInfo then _G.NL_NotifyInfo("DOORS: всё выключено") end
+end)
+
+_createButton(secAct, "Очистить ESP", C_DARKER, function()
+    for _, cat in pairs(ESPCache) do
+        for _, item in ipairs(cat) do
+            if item.obj then pcall(function() RemoveESP(item.obj) end) end
+        end
+    end
+end)
+
+_createButton(secAct, "Пересканировать", C_BLUE, function()
+    updateStatus()
+end)
+
+print("[DOORS] UI построен ✓")
+
+--========== SCAN LOOP ==========
+task.spawn(function()
+    while DoorsRunning and _G.NeverloseUILoaded do
+        pcall(function()
+            local CR = workspace:FindFirstChild("CurrentRooms")
+            local nD, nI, nC, nCh, nG, nE = {}, {}, {}, {}, {}, {}
+
+            if CR then
+                for _, room in ipairs(CR:GetChildren()) do
+                    local door = room:FindFirstChild("Door")
+                    if door and door:FindFirstChild("Door") then
+                        table.insert(nD, {obj = door, name = "Дверь", color = Color3.fromRGB(0, 255, 120)})
+                    end
+
+                    for _, obj in ipairs(room:GetDescendants()) do
+                        if obj:IsA("Model") then
+                            local n = obj.Name
+                            if n == "Key" or n == "LiveHintBook" or n == "Lighter"
+                                or n == "Lockpick" or n == "Flashlight" or n == "Crucifix"
+                                or n == "SkeletonKey" or n == "Candle" or n == "Battery" then
+                                table.insert(nI, {obj = obj, name = n, color = Color3.fromRGB(255, 255, 0)})
+                            elseif n == "Wardrobe" or n == "Bed" then
+                                table.insert(nC, {obj = obj, name = "Шкаф/Укрытие", color = Color3.fromRGB(180, 0, 255)})
+                            elseif n == "ChestBox" or n == "ChestBoxLocked"
+                                or n == "Chest" or n == "DrawerContainer" then
+                                table.insert(nCh, {obj = obj, name = "Сундук", color = Color3.fromRGB(0, 195, 255)})
+                            end
+                        end
+
+                        if (obj:IsA("Model") or obj:IsA("BasePart"))
+                            and (obj.Name == "Gold" or obj.Name == "GoldPile" or obj.Name == "StolenGold") then
+                            local t = obj:IsA("Model") and obj or obj.Parent
+                            if t and t:IsA("Model") then
+                                table.insert(nG, {obj = t, name = "Золото", color = Color3.fromRGB(255, 170, 0)})
+                            end
+                        end
+                    end
+                end
+            end
+
+            for _, ch in ipairs(workspace:GetChildren()) do
+                if ch:IsA("Model") and (ch.Name == "RushMoving" or ch.Name == "AmbushMoving"
+                    or ch.Name == "Figure" or ch.Name == "SeekMoving"
+                    or ch.Name == "Screech" or ch.Name == "Eyes") then
+                    table.insert(nE, {obj = ch, name = "⚠️ " .. ch.Name, color = Color3.fromRGB(255, 0, 50)})
+                end
+            end
+
+            ESPCache.Door   = nD
+            ESPCache.Item   = nI
+            ESPCache.Closet = nC
+            ESPCache.Chest  = nCh
+            ESPCache.Gold   = nG
+            ESPCache.Entity = nE
+        end)
+
+        task.wait(0.5)
+    end
+end)
+
+--========== UPDATE LOOP ==========
+task.spawn(function()
+    local statusTimer = 0
+    while DoorsRunning and _G.NeverloseUILoaded do
+        pcall(function()
+            if Settings.Fullbright then
+                DL_Lighting.Brightness     = 2
+                DL_Lighting.ClockTime      = 14
+                DL_Lighting.FogEnd         = 100000
+                DL_Lighting.GlobalShadows  = false
+                DL_Lighting.Ambient        = Color3.fromRGB(255, 255, 255)
+                DL_Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+            end
+
+            local cats = {
+                {data = ESPCache.Door,   enabled = Settings.DoorESP},
+                {data = ESPCache.Entity, enabled = Settings.EntityESP},
+                {data = ESPCache.Item,   enabled = Settings.ItemESP},
+                {data = ESPCache.Closet, enabled = Settings.ClosetESP},
+                {data = ESPCache.Chest,  enabled = Settings.ChestESP},
+                {data = ESPCache.Gold,   enabled = Settings.GoldESP},
+            }
+
+            for _, cat in ipairs(cats) do
+                for _, item in ipairs(cat.data) do
+                    if cat.enabled and item.obj and item.obj.Parent then
+                        ApplyESP(item.obj, item.name, item.color)
+                        local bb = item.obj:FindFirstChild("OptBB")
+                        if bb and bb:FindFirstChild("Txt") then
+                            local part = item.obj:IsA("BasePart") and item.obj
+                                or item.obj.PrimaryPart
+                                or item.obj:FindFirstChildWhichIsA("BasePart")
+                            if part then
+                                bb.Txt.Text = item.name .. " [" .. tostring(GetDistance(part)) .. "m]"
+                            end
+                        end
+                    else
+                        if item.obj then RemoveESP(item.obj) end
+                    end
+                end
+            end
+
+            statusTimer = statusTimer + 0.1
+            if statusTimer >= 1 then
+                statusTimer = 0
+                if statusLbl and statusLbl.Parent then
+                    updateStatus()
+                end
+            end
+        end)
+
+        task.wait(0.1)
+    end
+end)
+
+--========== UNLOAD ==========
+_G.NL_UnloadDoors = function()
+    DoorsRunning = false
+    for _, cat in pairs(ESPCache) do
+        for _, item in ipairs(cat) do
+            if item.obj then pcall(function() RemoveESP(item.obj) end) end
+        end
+    end
+end
+
+--========== СТАРТ ==========
+updateStatus()
+
+task.spawn(function()
+    task.wait(1)
+    if not _G.NeverloseUILoaded then return end
+    if _G.NL_NotifyOK then
+        _G.NL_NotifyOK("DOORS: вкладка готова")
+    end
+
+    local hasRooms = workspace:FindFirstChild("CurrentRooms") and true or false
+    if not hasRooms then
+        print("[DOORS] ⚠ CurrentRooms не найден — ты не в DOORS?")
+    else
+        print("[DOORS] ✓ CurrentRooms найден")
+    end
+end)
+
+print("========================================")
+print("[DOORS] Загружено! Ищи вкладку 'DOORS' вверху сайдбара.")
 print("========================================")
